@@ -2,6 +2,13 @@
 
 **An intent-based swap layer for Arkade — NEAR Intents, settled with recursive covenants.**
 
+The experimental **TypeScript PoC** has three runnable projects: `apps/striker`,
+`apps/maker`, and `apps/taker`. All maker–taker swap communication passes through
+Striker. Shared covenants and wire formats live in `packages/protocol`, alongside
+portable quote vectors and Arkade regtest tests. See **[POC.md](./POC.md)** for
+commands, scope, and the Rust port plan. The feature list below describes the
+protocol design, not completed PoC functionality.
+
 ---
 
 ## The idea in one breath
