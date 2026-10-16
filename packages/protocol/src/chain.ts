@@ -1,28 +1,34 @@
 import { ArkAddress, CSVMultisigTapscript, EsploraProvider, Extension, InMemoryContractRepository,
   InMemoryWalletRepository, RestArkProvider, RestEmulatorProvider, RestIndexerProvider,
   SingleKey, Transaction, Wallet, attachPrevArkTxs, type VtxoScript } from '@arkade-os/sdk';
+import { networkSettings } from './network.js';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { EPOCH_PACKET, bancoUserCovenant, covenantTree, makerCovenant } from './covenant.js';
 import { buildSettlement, type Coin, type Settlement } from './settlement.js';
 import { bytes, hex, type SignedOffer } from './wire.js';
 
 export async function connectChain() {
-  const ark = new RestArkProvider(process.env.ARK_URL ?? 'http://localhost:7070');
-  const indexer = new RestIndexerProvider(process.env.ARK_URL ?? 'http://localhost:7070');
-  const emulator = new RestEmulatorProvider(process.env.EMULATOR_URL ?? 'http://localhost:7073');
+  const settings = networkSettings();
+  const ark = new RestArkProvider(settings.arkUrl);
+  const indexer = new RestIndexerProvider(settings.arkUrl);
+  const emulator = new RestEmulatorProvider(settings.emulatorUrl);
   const info = await ark.getInfo();
-  if (info.network !== 'regtest') throw new Error('This PoC requires an Arkade regtest server');
+  if (info.network !== settings.network) throw new Error(`Expected ${settings.network}, server reports ${info.network}`);
+  // Settlement currently conserves every satoshi; refuse a fee policy it cannot pay.
+  if (Number(info.fees.txFeeRate) !== 0) throw new Error('PoC settlement requires zero offchain transaction fees');
   const server = Uint8Array.from(Buffer.from(info.signerPubkey, 'hex')).slice(-32);
-  const emulatorKey = bytes(process.env.EMULATOR_PUBKEY ??
-    '999413c46fa10ada5cbc4bcc79a1d09160c2ba3cfc812705d7a13e5e545fb2a9', 32, 'EMULATOR_PUBKEY');
+  const emulatorKey = bytes(settings.emulatorKey, 32, 'EMULATOR_PUBKEY');
+  const emulatorInfo = await emulator.getInfo();
+  if (emulatorInfo.signerPubkey.slice(-64) !== hex(emulatorKey))
+    throw new Error('Emulator signer does not match the configured pinned key');
   const checkpoint = CSVMultisigTapscript.decode(Uint8Array.from(Buffer.from(info.checkpointTapscript, 'hex')));
-  return { ark, indexer, emulator, server, emulatorKey, checkpoint };
+  return { ark, indexer, emulator, server, emulatorKey, checkpoint, settings };
 }
 export type Chain = Awaited<ReturnType<typeof connectChain>>;
 export async function createWallet(chain: Chain, secret: Uint8Array) {
   const identity = SingleKey.fromPrivateKey(secret);
   const wallet = await Wallet.create({ identity, arkProvider: chain.ark,
-    onchainProvider: new EsploraProvider(process.env.ESPLORA_URL ?? 'http://localhost:3000/api',
+    onchainProvider: new EsploraProvider(chain.settings.esploraUrl,
       { forcePolling: true, pollingInterval: 2000 }),
     storage: { walletRepository: new InMemoryWalletRepository(), contractRepository: new InMemoryContractRepository() },
     settlementConfig: false });

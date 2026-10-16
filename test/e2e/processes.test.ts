@@ -14,14 +14,15 @@ const exec = promisify(execFile);
 const root = fileURLToPath(new URL('../../', import.meta.url));
 type Role = 'striker' | 'maker' | 'taker';
 const binary = (role: Role) => path.join(root, 'apps', role, 'dist/cli.js');
-function environment(role: Role, secret?: Uint8Array): NodeJS.ProcessEnv {
+function environment(role: Role, secret?: Uint8Array, configDir?: string): NodeJS.ProcessEnv {
   const { MAKER_PRIVATE_KEY: _maker, TAKER_PRIVATE_KEY: _taker, ...env } = process.env;
   if (role !== 'striker' && secret) env[`${role.toUpperCase()}_PRIVATE_KEY`] = hex(secret);
+  if (configDir) env[`${role.toUpperCase()}_CONFIG_DIR`] = configDir;
   return env;
 }
-async function command(role: Role, args: string[], secret?: Uint8Array): Promise<Record<string, unknown>> {
+async function runCommand(role: Role, args: string[], secret?: Uint8Array, configDir?: string): Promise<Record<string, unknown>> {
   const result = await exec(process.execPath, ['--experimental-eventsource', binary(role), ...args],
-    { cwd: root, env: environment(role, secret), timeout: 60_000 });
+    { cwd: root, env: environment(role, secret, configDir), timeout: 60_000 });
   return object(JSON.parse(result.stdout.trim().split('\n').at(-1)!));
 }
 async function stop(child: ChildProcess) {
@@ -39,10 +40,20 @@ test('independent maker, striker, and taker processes trade exclusively through 
     const children: ChildProcess[] = [];
     const actors: Awaited<ReturnType<typeof createWallet>>[] = [];
     const makerKey = randomBytes(32), betterKey = randomBytes(32), takerKey = randomBytes(32);
+    const configDir = (role: Role, key?: Uint8Array) => path.join(directory, key === betterKey ? 'better-maker' : role);
+    const command = (role: Role, args: string[], key?: Uint8Array) => runCommand(role, args, key, configDir(role, key));
     t.after(async () => {
       await Promise.all(children.map(stop));
       await Promise.all(actors.map(actor => actor.wallet.dispose()));
       rmSync(directory, { recursive: true, force: true });
+    });
+    await t.test('restarted CLI processes reuse persisted maker and taker identities', async () => {
+      for (const role of ['maker', 'taker'] as const) {
+        const directoryForRestart = path.join(directory, `restart-${role}`);
+        const first = await runCommand(role, ['init'], undefined, directoryForRestart);
+        const restarted = await runCommand(role, ['init'], undefined, directoryForRestart);
+        assert.equal(restarted.publicKey, first.publicKey);
+      }
     });
     async function actor(key: Uint8Array) {
       const account = await createWallet(chain, key);
@@ -64,7 +75,7 @@ test('independent maker, striker, and taker processes trade exclusively through 
       '--rate-numerator', '11', '--rate-denominator', '2', '--state', betterState], betterKey);
     async function start(role: Role, args: string[], key?: Uint8Array) {
       const child = spawn(process.execPath, ['--experimental-eventsource', binary(role), ...args, '--port', '0'],
-        { cwd: root, env: environment(role, key), stdio: ['ignore', 'pipe', 'pipe'] });
+        { cwd: root, env: environment(role, key, configDir(role, key)), stdio: ['ignore', 'pipe', 'pipe'] });
       children.push(child);
       const url = await new Promise<string>((resolve, reject) => {
         let output = '', errors = '';

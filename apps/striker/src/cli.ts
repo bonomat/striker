@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { randomUUID } from 'node:crypto';
 import { args, bytes, connectChain, decimal, fundedCoin, hex, HttpError, listen, liveMaker, main,
-  nowSeconds, object, offerJSON, p2tr, parseOffer, parseQuoteRequest, port, requestJSON, required,
+  nowSeconds, object, offerJSON, p2tr, parseOffer, parseQuoteRequest, port, requestJSON, required, loadConfig,
   settle, takerContract, validateOfferFor, type QuoteRequest, type SignedOffer } from '@satora/striker-protocol';
 
-const HELP = 'striker serve --makers http://127.0.0.1:4101[,http://127.0.0.1:4102] [--host 127.0.0.1] [--port 4100]';
+const HELP = 'striker init | serve [--makers URL[,URL]] [--host HOST] [--port PORT] [--config-dir DIR] [--network regtest|mutinynet]\nConfig defaults to .striker/config.json (or STRIKER_CONFIG_DIR). Striker has no private key.';
 interface Order {
   offer: SignedOffer;
   request: QuoteRequest;
@@ -15,15 +15,17 @@ interface Order {
 main(async () => {
   const parsed = args(['makers', 'host', 'port']), flags = parsed.values;
   if (flags.help || !parsed.positionals[0]) { console.log(HELP); return; }
-  if (parsed.positionals[0] !== 'serve') throw new Error(HELP);
-  const makers = required(flags.makers, '--makers').split(',').map(raw => {
+  if (!['init', 'serve'].includes(parsed.positionals[0])) throw new Error(HELP);
+  const local = loadConfig('striker', typeof flags['config-dir'] === 'string' ? flags['config-dir'] : undefined);
+  if (parsed.positionals[0] === 'init') { console.log(JSON.stringify({ configDir: local.directory })); return; }
+  const makers = required(flags.makers ?? local.config.makers, 'makers').split(',').map(raw => {
     const url = new URL(raw);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid maker URL');
     return url.origin;
   });
   const chain = await connectChain();
   const orders = new Map<string, Order>();
-  await listen('striker', typeof flags.host === 'string' ? flags.host : '127.0.0.1', port(flags.port, 4100),
+  await listen('striker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4100),
     async (method, path, body) => {
       if (method === 'GET' && path === '/health') return { service: 'striker', ok: true };
       if (method === 'POST' && path === '/v1/quotes') {

@@ -1,17 +1,21 @@
 import { parseArgs } from 'node:util';
 import { readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { bytes, string } from './wire.js';
+import { string } from './wire.js';
+import path from 'node:path';
+import { configDirectory, loadPrivateKey } from './config.js';
 
 export function args(names: string[]) {
   const parsed = parseArgs({ allowPositionals: true, options: Object.fromEntries([
-    ['help', { type: 'boolean' as const }], ...names.map(name => [name, { type: 'string' as const }]),
+    ['help', { type: 'boolean' as const }], ...['config-dir', 'network', ...names].map(name => [name, { type: 'string' as const }]),
   ]) });
-  return { values: parsed.values as Record<string, string | boolean | undefined>, positionals: parsed.positionals };
+  const values = parsed.values as Record<string, string | boolean | undefined>;
+  if (typeof values.network === 'string') process.env.STRIKER_NETWORK = values.network;
+  return { values, positionals: parsed.positionals };
 }
 export function required(value: unknown, name: string): string { return string(value, name); }
-export function secretKey(role: 'maker' | 'taker'): Uint8Array {
+export function secretKey(role: 'maker' | 'taker', directory = configDirectory(role)): Uint8Array {
   const name = `${role.toUpperCase()}_PRIVATE_KEY`;
-  return bytes(process.env[name], 32, name);
+  return loadPrivateKey(path.join(directory, 'private-key'), process.env[name]);
 }
 export function readJSON(file: string): unknown { return JSON.parse(readFileSync(file, 'utf8')); }
 export function writeJSON(file: string, data: unknown, exclusive = false) {

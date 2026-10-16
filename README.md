@@ -9,6 +9,17 @@ portable quote vectors and Arkade regtest tests. See **[POC.md](./POC.md)** for
 commands, scope, and the Rust port plan. The feature list below describes the
 protocol design, not completed PoC functionality.
 
+For a local demo, run `just setup`, then `just start`. In another terminal,
+`just taker` requests and executes a swap through Striker. Maker and taker keys
+persist in ignored `.maker/` and `.taker/` directories across restarts; service
+settings live in `.striker/`. For Mutinynet, use `just setup mutinynet`,
+`just start mutinynet`, then `just taker 2000 mutinynet`. Keys are shared;
+network state is separate. Fund both Mutinynet wallets before setup; it checks
+the balances before issuing the demo token and never calls the public faucet. See [Mutinynet setup](./POC.md#mutinynet-setup).
+Use `just setup mutinynet local`, `just start mutinynet local`, and
+`just taker 100 mutinynet local` to test against a local Emulator with full logs
+while settling on Mutinynet. `just --list` shows the other commands.
+
 ---
 
 ## The idea in one breath
