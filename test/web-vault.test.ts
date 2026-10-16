@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encryptWallet, decryptWallet, parseVault } from '../apps/web/src/vault.js';
+import { encryptWallet, decryptWallet, parseVault, recoverWallet } from '../apps/web/src/vault.js';
 
 test('browser wallet backup encrypts the key, authenticates metadata and rejects a wrong password', async () => {
   const key = '01'.repeat(32), password = 'a memorable test password';
@@ -14,4 +14,14 @@ test('browser wallet backup encrypts the key, authenticates metadata and rejects
   assert.equal(Buffer.from(await decryptWallet(short, 'x')).toString('hex'), key);
   await assert.rejects(encryptWallet('', key), /1 and 256/);
   await assert.rejects(encryptWallet(password, '00'.repeat(32)), /Invalid private key/);
+});
+
+test('private-key recovery preserves wallet identity and requires the new password', async () => {
+  const privateKey = '01'.repeat(32), original = await encryptWallet('old', privateKey);
+  const recovered = await recoverWallet(original, 'x', privateKey);
+  assert.equal(recovered.publicKey, original.publicKey);
+  assert.equal(Buffer.from(await decryptWallet(recovered, 'x')).toString('hex'), privateKey);
+  await assert.rejects(decryptWallet(recovered, 'old'), /Unable to unlock/);
+  await assert.rejects(recoverWallet(original, 'x', '02'.repeat(32)), /another wallet/);
+  assert.equal(Buffer.from(await decryptWallet(original, 'old')).toString('hex'), privateKey);
 });

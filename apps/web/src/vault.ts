@@ -97,3 +97,17 @@ export async function decryptWallet(
     throw new Error("Unable to unlock. Check your password and wallet backup.");
   }
 }
+
+/** Re-encrypt the same wallet using its original key when the password is lost. */
+export async function recoverWallet(
+  value: Vault,
+  password: string,
+  privateKey: string,
+): Promise<Vault> {
+  const recovered = await encryptWallet(password, privateKey);
+  if (recovered.publicKey !== value.publicKey)
+    throw new Error(
+      "This private key belongs to another wallet. The saved wallet has not been replaced.",
+    );
+  return recovered;
+}

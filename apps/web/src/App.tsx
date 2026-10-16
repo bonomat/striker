@@ -18,6 +18,7 @@ import {
   decryptWallet,
   encryptWallet,
   parseVault,
+  recoverWallet,
   type Vault,
 } from "./vault.js";
 import "./style.css";
@@ -180,6 +181,11 @@ export default function App() {
     [actionError, setActionError] = useState("");
   const [walletBusy, setWalletBusy] = useState(false),
     [walletError, setWalletError] = useState("");
+  const [walletRecovery, setWalletRecovery] = useState<
+    "none" | "recover" | "delete"
+  >("none");
+  const [deleteConfirmation, setDeleteConfirmation] = useState("");
+  const [restoring, setRestoring] = useState<Vault | null>(null);
   const [password, setPassword] = useState(""),
     [confirmation, setConfirmation] = useState(""),
     [importKey, setImportKey] = useState("");
@@ -353,12 +359,21 @@ export default function App() {
     setWalletBusy(true);
     setWalletError("");
     try {
-      let encrypted = vault;
+      let encrypted = restoring ?? vault;
       if (!window.isSecureContext)
         throw new Error(
           "Open Striker on HTTPS or localhost to use your wallet.",
         );
-      if (!encrypted) {
+      if (walletRecovery === "recover" && vault) {
+        if (password !== confirmation)
+          throw new Error("Your passwords do not match.");
+        if (!importKey.trim())
+          throw new Error("Enter your original wallet private key.");
+        encrypted = await recoverWallet(vault, password, importKey);
+        localStorage.setItem(vaultStorageKey, JSON.stringify(encrypted));
+        setVault(encrypted);
+        setWalletRecovery("none");
+      } else if (!encrypted) {
         if (localStorage.getItem(vaultStorageKey))
           throw new Error(
             "The saved wallet could not be read. Preserve its browser data and restore your encrypted backup before creating another wallet.",
@@ -375,6 +390,11 @@ export default function App() {
         setVault(encrypted);
       }
       const key = await decryptWallet(encrypted, password);
+      if (restoring) {
+        localStorage.setItem(vaultStorageKey, JSON.stringify(encrypted));
+        setVault(encrypted);
+        setRestoring(null);
+      }
       const connected = await connectWallet(config, key, () =>
         setRevision((value) => value + 1),
       );
@@ -395,8 +415,15 @@ export default function App() {
       if (file.size > 4096)
         throw new Error("This is not a Striker wallet backup.");
       const encrypted = parseVault(JSON.parse(await file.text()));
-      localStorage.setItem(vaultStorageKey, JSON.stringify(encrypted));
-      setVault(encrypted);
+      if (vault && encrypted.publicKey !== vault.publicKey)
+        throw new Error(
+          "This backup belongs to another wallet. Delete the saved wallet first to switch wallets.",
+        );
+      setRestoring(encrypted);
+      setWalletRecovery("none");
+      setPassword("");
+      setConfirmation("");
+      setImportKey("");
       setWalletError("");
     } catch (error) {
       setWalletError(errorMessage(error));
@@ -412,6 +439,24 @@ export default function App() {
     link.download = `striker-wallet-${vault.publicKey.slice(0, 8)}.json`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function resetWalletForm(mode: "none" | "recover" | "delete") {
+    setWalletRecovery(mode);
+    setWalletError("");
+    setPassword("");
+    setConfirmation("");
+    setImportKey("");
+    setDeleteConfirmation("");
+    setRestoring(null);
+  }
+  function deleteSavedWallet() {
+    if (walletBusy || account || deleteConfirmation !== "DELETE") return;
+    localStorage.removeItem(vaultStorageKey);
+    setVault(null);
+    setQuote(null);
+    setSelected(null);
+    setWalletMode("create");
+    resetWalletForm("none");
   }
   async function copyAddress() {
     if (!account) return;
@@ -881,16 +926,18 @@ export default function App() {
           title={
             account
               ? "Your wallet"
-              : vault
-                ? "Welcome back."
-                : "Your wallet. Your move."
+              : walletRecovery === "delete"
+                ? "Delete saved wallet?"
+                : walletRecovery === "recover"
+                  ? "Recover your wallet."
+                  : vault || restoring
+                    ? "Welcome back."
+                    : "Your wallet. Your move."
           }
           close={() => {
             if (!walletBusy) {
               setModal(null);
-              setPassword("");
-              setConfirmation("");
-              setImportKey("");
+              resetWalletForm("none");
             }
           }}
         >
@@ -936,14 +983,68 @@ export default function App() {
                 Lock wallet
               </button>
             </>
+          ) : walletRecovery === "delete" ? (
+            <>
+              <p className="modal-caption">
+                This removes the saved wallet key from this browser. It does not
+                move your funds or cancel pending swaps.
+              </p>
+              <p className="inline-error">
+                You will lose access to this wallet unless you have its private
+                key, or an encrypted backup and its password. A backup alone
+                cannot recover a forgotten password.
+              </p>
+              {vault && (
+                <button className="secondary-button" onClick={backup}>
+                  Download encrypted backup
+                </button>
+              )}
+              <form
+                className="wallet-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  deleteSavedWallet();
+                }}
+              >
+                <label>
+                  Type DELETE to confirm
+                  <input
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={deleteConfirmation}
+                    onChange={(event) =>
+                      setDeleteConfirmation(event.target.value)
+                    }
+                    placeholder="DELETE"
+                    aria-label="Delete confirmation"
+                  />
+                </label>
+                <button
+                  className="swap-button delete-wallet-button"
+                  disabled={deleteConfirmation !== "DELETE"}
+                >
+                  Delete saved wallet
+                </button>
+              </form>
+              <button
+                className="text-button lock-wallet"
+                onClick={() => resetWalletForm("none")}
+              >
+                Cancel
+              </button>
+            </>
           ) : (
             <>
               <p className="modal-caption">
-                {vault
-                  ? "Unlock the wallet saved in this browser."
-                  : "Create a browser wallet, or bring an existing Arkade key. Your key is encrypted with your password."}
+                {walletRecovery === "recover"
+                  ? "Use your original private key to set a new password. Your wallet address, funds and swap history stay the same."
+                  : restoring
+                    ? "Enter the password for your encrypted backup. The saved wallet is replaced only after the backup unlocks."
+                    : vault
+                      ? "Unlock the wallet saved in this browser."
+                      : "Create a browser wallet, or bring an existing Arkade key. Your key is encrypted with your password."}
               </p>
-              {!vault && (
+              {!vault && !restoring && (
                 <div className="wallet-tabs">
                   <button
                     className={walletMode === "create" ? "selected" : ""}
@@ -963,7 +1064,8 @@ export default function App() {
                 className="wallet-form"
                 onSubmit={(event) => void openWallet(event)}
               >
-                {!vault && walletMode === "import" && (
+                {((!vault && !restoring && walletMode === "import") ||
+                  walletRecovery === "recover") && (
                   <label>
                     Private key
                     <input
@@ -977,14 +1079,24 @@ export default function App() {
                   </label>
                 )}
                 <label>
-                  {vault ? "Password" : "Choose a password"}
+                  {walletRecovery === "recover"
+                    ? "New password"
+                    : vault || restoring
+                      ? "Password"
+                      : "Choose a password"}
                   <input
                     type="password"
-                    autoComplete={vault ? "current-password" : "new-password"}
+                    autoComplete={
+                      (vault || restoring) && walletRecovery !== "recover"
+                        ? "current-password"
+                        : "new-password"
+                    }
                     minLength={1}
                     maxLength={256}
                     placeholder={
-                      vault ? "Your wallet password" : "Choose a password"
+                      (vault || restoring) && walletRecovery !== "recover"
+                        ? "Your wallet password"
+                        : "Choose a password"
                     }
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
@@ -992,7 +1104,7 @@ export default function App() {
                     disabled={walletBusy}
                   />
                 </label>
-                {!vault && (
+                {((!vault && !restoring) || walletRecovery === "recover") && (
                   <label>
                     Confirm password
                     <input
@@ -1017,18 +1129,63 @@ export default function App() {
                 >
                   {walletBusy
                     ? "Opening your wallet…"
-                    : vault
-                      ? "Unlock wallet"
-                      : walletMode === "import"
-                        ? "Import & connect"
-                        : "Create & connect"}
+                    : walletRecovery === "recover"
+                      ? "Recover & connect"
+                      : vault || restoring
+                        ? "Unlock wallet"
+                        : walletMode === "import"
+                          ? "Import & connect"
+                          : "Create & connect"}
                 </button>
               </form>
-              {!vault && (
+              {vault && !restoring && walletRecovery === "none" && (
+                <div className="wallet-recovery-actions">
+                  <button
+                    className="text-button"
+                    disabled={walletBusy}
+                    onClick={() => resetWalletForm("recover")}
+                  >
+                    Forgot password? Recover wallet
+                  </button>
+                  <button
+                    className="text-button danger"
+                    disabled={walletBusy}
+                    onClick={() => resetWalletForm("delete")}
+                  >
+                    Delete saved wallet
+                  </button>
+                </div>
+              )}
+              {walletRecovery === "recover" && (
+                <>
+                  <p className="small-print">
+                    Without your private key, the password cannot be reset. An
+                    encrypted backup still needs its original password.
+                  </p>
+                  <button
+                    className="text-button lock-wallet"
+                    disabled={walletBusy}
+                    onClick={() => resetWalletForm("none")}
+                  >
+                    Back to unlock
+                  </button>
+                </>
+              )}
+              {restoring && (
+                <button
+                  className="text-button lock-wallet"
+                  disabled={walletBusy}
+                  onClick={() => resetWalletForm("none")}
+                >
+                  Cancel backup restore
+                </button>
+              )}
+              {(
                 <label className="backup-import">
-                  Have a Striker backup? <span>Restore wallet</span>
+                  Have a Striker backup? <span>Restore backup</span>
                   <input
                     type="file"
+                    disabled={walletBusy}
                     accept="application/json,.json"
                     onChange={(event) =>
                       void importBackup(event.target.files?.[0])

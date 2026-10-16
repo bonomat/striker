@@ -964,6 +964,24 @@ button svg {
   font-size: 11px;
   margin: 12px auto 0;
 }
+.wallet-recovery-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin-top: 22px;
+}
+.wallet-recovery-actions .danger {
+  color: #a2483a;
+}
+.delete-wallet-button {
+  background: #a2483a;
+  border-color: #a2483a;
+  color: white;
+}
+.delete-wallet-button:hover:not(:disabled) {
+  background: #843b30;
+}
 .lock-wallet {
   color: #9ca58f;
 }
