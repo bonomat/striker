@@ -27,6 +27,10 @@ import {
   type Direction,
 } from "@satora/striker-protocol/browser";
 
+// Funding can take several network round trips; leave time for covenant validation.
+export const MIN_QUOTE_FUNDING_SECONDS = 30;
+const MIN_QUOTE_SETTLEMENT_SECONDS = 5;
+
 export interface SwapResult {
   quoteId: string;
   status: string;
@@ -182,6 +186,8 @@ export class TakerClient {
           throw new Error(
             "Funding outcome is unknown. Check wallet activity before sending more funds.",
           );
+        if (Number(offer.quote.deadline) * 1000 - Date.now() < MIN_QUOTE_FUNDING_SECONDS * 1000)
+          throw new Error("Quote expires too soon to fund safely. Refresh the quote before swapping.");
         // Persist intent first: a reload or uncertain network failure must never fund twice.
         saved.fundingStartedAt = Date.now();
         const reverse = offer.deposit.direction === 'btc-to-token';
@@ -208,6 +214,8 @@ export class TakerClient {
         await this.options.store.put(saved);
       }
       decimal(funding.fundingVout, "fundingVout");
+      if (Number(offer.quote.deadline) * 1000 - Date.now() < MIN_QUOTE_SETTLEMENT_SECONDS * 1000)
+        throw new Error("Quote expired or is too close to expiry to settle safely. Return unspent funds to your wallet, then request a new quote.");
       const result = object(
         await requestJSON(
           `${this.strikerUrl}/v1/swaps`,

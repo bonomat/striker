@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import type { WalletBalance } from "@arkade-os/sdk";
-import { formatAmount, parseAmount, type SavedSwap } from "@satora/taker-sdk";
+import { formatAmount, parseAmount, MIN_QUOTE_FUNDING_SECONDS, type SavedSwap } from "@satora/taker-sdk";
 import type { AppConfig } from "./config.js";
 import {
   connectWallet,
@@ -26,6 +26,7 @@ import {
 import "./style.css";
 import { WalletBalances } from "./WalletBalances.js";
 import { WalletAddress } from "./WalletAddress.js";
+import { SwapDetails } from "./SwapDetails.js";
 import { walletSession } from "./wallet-session.js";
 
 const short = (text: string) => `${text.slice(0, 9)}…${text.slice(-6)}`;
@@ -621,7 +622,7 @@ export default function App() {
                     ? "Finding your best quote…"
                     : quoteError
                       ? "Try another amount"
-                      : quote && !expires
+                      : quote && expires < MIN_QUOTE_FUNDING_SECONDS
                         ? "Refresh quote"
                         : !quote
                           ? "Enter an amount"
@@ -640,9 +641,6 @@ export default function App() {
         !!quoteError));
   const succeeded = activeSwap?.result?.status === "settled",
     refunded = activeSwap?.refund?.status === "refunded";
-  const finalTxid = succeeded
-    ? activeSwap?.result?.txid
-    : activeSwap?.refund?.txid;
   const displayedSwap =
     activeSwap ?? (quote?.response.quoteId === selected ? quote : undefined);
   const primaryClick = () => {
@@ -650,7 +648,8 @@ export default function App() {
       setWalletError("");
       setModal("wallet");
     } else if (pending) inspect(pending);
-    else if (quote && !expires) setQuoteNonce((value) => value + 1);
+    else if (quote && expires < MIN_QUOTE_FUNDING_SECONDS)
+      setQuoteNonce((value) => value + 1);
     else if (quote) {
       setActionError("");
       setModal("review");
@@ -1462,17 +1461,22 @@ export default function App() {
           </div>
           <button
             className="swap-button modal-primary"
-            disabled={!expires || busy}
-            onClick={() => void execute(quote)}
+            disabled={busy || quoting}
+            onClick={() => {
+              if (expires < MIN_QUOTE_FUNDING_SECONDS) {
+                setModal(null);
+                setQuoteNonce((value) => value + 1);
+              } else void execute(quote);
+            }}
           >
-            Confirm swap
+            {expires < MIN_QUOTE_FUNDING_SECONDS ? "Refresh quote" : "Confirm swap"}
             <Icon>
               <path d="M4 12h16m-6-6 6 6-6 6" />
             </Icon>
           </button>
-          {!expires && (
+          {expires < MIN_QUOTE_FUNDING_SECONDS && (
             <p className="inline-error">
-              This quote expired. Close this dialog to refresh it.
+              Refresh this quote so there is enough time to fund and settle your swap.
             </p>
           )}
         </Modal>
@@ -1565,18 +1569,15 @@ export default function App() {
               {actionError}
             </p>
           )}
-          {finalTxid && (
-            <div className="transaction-id">
-              <span>Transaction</span>
-              <code title={finalTxid}>{short(finalTxid)}</code>
-              <button
-                className="icon-button"
-                aria-label="Copy transaction ID"
-                onClick={() => void navigator.clipboard.writeText(finalTxid)}
-              >
-                <Copy />
-              </button>
-            </div>
+          {displayedSwap && (
+            <SwapDetails
+              quoteId={displayedSwap.response.quoteId}
+              fundingTxid={displayedSwap.funding?.fundingTxid}
+              fundingVout={displayedSwap.funding?.fundingVout}
+              settlementTxid={displayedSwap.result?.txid}
+              refundTxid={displayedSwap.refund?.txid}
+              network={config?.network ?? "regtest"}
+            />
           )}
           {!busy && (succeeded || refunded) && (
             <button

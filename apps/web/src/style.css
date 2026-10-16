@@ -1308,6 +1308,50 @@ button svg {
   font-weight: 550;
   color: #667e45;
 }
+.swap-identifiers {
+  margin: 20px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.swap-identifier + .swap-identifier {
+  margin-top: 14px;
+}
+.swap-identifier dt {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.swap-identifier dd {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+}
+.swap-identifier code {
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.swap-explorer-link {
+  color: var(--green);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.swap-explorer-link:hover {
+  color: var(--ink);
+}
+.swap-copy-status {
+  display: block;
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--green);
+  margin-top: 5px;
+}
 .progress-list {
   margin: 25px 0;
   display: flex;

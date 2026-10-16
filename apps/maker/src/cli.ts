@@ -12,7 +12,7 @@ import { args, assetId, connectChain, createWallet, decimal, depositJSON, epochO
 const HELP = `maker init | address | balance [--state FILE]
 maker deposit --asset-id HEX --sats SATS --rate-numerator N --rate-denominator D [--state FILE]
 maker deposit --direction btc-to-token --asset-id HEX --tokens UNITS --sats SATS --rate-numerator N --rate-denominator D
-maker serve [--state FILE] [--host 127.0.0.1] [--port 4101] [--ttl-seconds 30]
+maker serve [--state FILE] [--host 127.0.0.1] [--port 4101] [--ttl-seconds 120]
 Serve loads deposit.json and reverse-deposit.json; --reverse-state overrides the token pool path.
 --config-dir DIR defaults to .maker (or MAKER_CONFIG_DIR).
 The private key is generated once in DIR/private-key. MAKER_PRIVATE_KEY imports an existing key.

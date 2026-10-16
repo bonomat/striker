@@ -44,6 +44,49 @@ test('persisted funding attempts prevent double funding after an uncertain outco
   assert.equal(sends(), 0);
 });
 
+test('quotes near expiry never start funding', async t => {
+  const { f, client, records, response, sends } = setup();
+  t.mock.method(Date, 'now', () => (Number(f.quote.deadline) - 29) * 1000);
+  t.mock.method(globalThis, 'fetch', async () => Response.json(response));
+  await client.quote(hex(f.deposit.wantAsset), '2000');
+  await assert.rejects(client.execute('quote-1'), /expires too soon to fund safely/);
+  assert.equal(sends(), 0);
+  assert.equal(records.get('quote-1')?.fundingStartedAt, undefined);
+});
+
+test('funded quotes near expiry preserve funding and do not request settlement', async t => {
+  const { f, client, records, response, sends } = setup();
+  t.mock.method(Date, 'now', () => (Number(f.quote.deadline) - 4) * 1000);
+  let requests = 0;
+  t.mock.method(globalThis, 'fetch', async () => { requests++; return Response.json(response); });
+  const quote = await client.quote(hex(f.deposit.wantAsset), '2000');
+  quote.funding = { fundingTxid: 'cd'.repeat(32), fundingVout: '0' };
+  records.set('quote-1', quote);
+  await assert.rejects(client.execute('quote-1'), /Return unspent funds/);
+  assert.equal(requests, 1, 'Only the original quote request was sent');
+  assert.equal(sends(), 0);
+  assert.deepEqual(records.get('quote-1')?.funding, quote.funding);
+});
+
+test('slow funding is saved before expiry prevents settlement and duplicate funding', async t => {
+  const { f, client, records, response } = setup();
+  let now = (Number(f.quote.deadline) - 120) * 1000, sends = 0, requests = 0;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'fetch', async () => { requests++; return Response.json(response); });
+  t.mock.method(client.options.actor.wallet, 'send', async () => {
+    sends++; now = (Number(f.quote.deadline) - 4) * 1000; return '11'.repeat(32);
+  });
+  client.options.chain.indexer = {
+    async getVtxos() { return { vtxos: [{ txid: '11'.repeat(32), vout: 0, value: 330 }] }; },
+  } as unknown as Chain['indexer'];
+  await client.quote(hex(f.deposit.wantAsset), '2000');
+  await assert.rejects(client.execute('quote-1'), /Return unspent funds/);
+  await assert.rejects(client.execute('quote-1'), /Return unspent funds/);
+  assert.equal(sends, 1);
+  assert.equal(requests, 1);
+  assert.deepEqual(records.get('quote-1')?.funding, { fundingTxid: '11'.repeat(32), fundingVout: '0' });
+});
+
 test('resuming saved funding executes through Striker without funding again', async t => {
   const { f, client, records, response, sends } = setup();
   const txid = 'ab'.repeat(32);

@@ -117,7 +117,11 @@ just regtest-stop   # stop the test infrastructure, preserving its volumes
 just --list
 ```
 
-Execute a separately requested quote before its deadline (30 seconds by default).
+Execute a separately requested quote before its deadline (120 seconds for newly
+initialized maker configurations). Existing maker configs preserve their saved
+`ttlSeconds`; set it to `120` to use the longer window. The taker requires at
+least 30 seconds remaining before funding and five seconds before requesting
+settlement. A funded offer that runs out of time can be returned to the wallet.
 The configured demo rate offers five BTC sats per asset atomic unit. `just taker`
 performs quote and execution together so there is no manual copy/paste delay.
 
@@ -403,6 +407,9 @@ Arkade assets, including amounts that are not currently spendable. Token metadat
 supplies names and decimals where available; otherwise the view shows the asset
 ID and exact atomic units. Balances refresh automatically and on demand.
 The wallet and Receive views show a QR code encoding the displayed Arkade address.
+Swap dialogs show the quote ID, funding transaction and output, and any settlement
+or refund transaction ID, with selectable IDs and copy buttons for support.
+On Mutinynet, every displayed transaction ID links to its Arkade explorer page.
 
 Unlocked wallets reconnect after reloads in the same tab. The session keeps an
 encrypted copy of the key in session storage, wrapped with a non-extractable

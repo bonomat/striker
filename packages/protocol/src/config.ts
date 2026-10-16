@@ -7,7 +7,7 @@ import { bytes, hex, object } from './wire.js';
 export type Role = 'striker' | 'maker' | 'taker';
 const defaults: Record<Role, Record<string, unknown>> = {
   striker: { host: '127.0.0.1', port: 4100, makers: 'http://127.0.0.1:4101' },
-  maker: { host: '127.0.0.1', port: 4101, ttlSeconds: 30 },
+  maker: { host: '127.0.0.1', port: 4101, ttlSeconds: 120 },
   taker: { striker: 'http://127.0.0.1:4100', giveAmount: '2000' },
 };
 
