@@ -115,7 +115,8 @@ button svg {
   border: 1px solid #e6e9e0;
   border-radius: 40px;
 }
-.main-nav button {
+.main-nav button,
+.main-nav a {
   background: transparent;
   padding: 9px 22px;
   color: #7b8276;
@@ -125,6 +126,7 @@ button svg {
   align-items: center;
   gap: 6px;
   border-radius: 30px;
+  text-decoration: none;
 }
 .main-nav .nav-active {
   background: white;
@@ -1440,8 +1442,9 @@ button svg {
 }
 @media (max-width: 640px) {
   .header {
-    height: 79px;
+    height: 122px;
     padding: 0 21px;
+    padding-bottom: 43px;
   }
   .brand {
     font-size: 27px;
@@ -1459,18 +1462,20 @@ button svg {
     margin-left: -8px;
   }
   .main-nav {
-    left: auto;
-    right: 145px;
+    left: 21px;
+    right: auto;
+    bottom: 10px;
     transform: none;
     padding: 0;
     border: none;
     background: none;
   }
   .main-nav .nav-active {
-    display: none;
+    display: flex;
   }
-  .main-nav button {
-    padding: 8px;
+  .main-nav button,
+  .main-nav a {
+    padding: 8px 12px;
     font-size: 11px;
     background: none;
   }

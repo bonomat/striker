@@ -29,6 +29,7 @@ import { WalletBalances } from "./WalletBalances.js";
 import { WalletAddress } from "./WalletAddress.js";
 import { SwapDetails } from "./SwapDetails.js";
 import { HowItWorks } from "./HowItWorks.js";
+import { ProtocolPage } from "./ProtocolPage.js";
 import { walletSession } from "./wallet-session.js";
 
 const short = (text: string) => `${text.slice(0, 9)}…${text.slice(-6)}`;
@@ -168,6 +169,18 @@ function Modal({
 }
 
 export default function App() {
+  const [page, setPage] = useState(() => window.location.hash === "#/protocol" ? "protocol" : "swap");
+  useEffect(() => {
+    const navigate = () => {
+      setPage(window.location.hash === "#/protocol" ? "protocol" : "swap");
+      window.scrollTo(0, 0);
+    };
+    window.addEventListener("hashchange", navigate);
+    return () => window.removeEventListener("hashchange", navigate);
+  }, []);
+  useEffect(() => {
+    document.title = page === "protocol" ? "Protocol · Striker" : "Striker · Swap on Arkade";
+  }, [page]);
   const [config, setConfig] = useState<AppConfig | null>(null),
     [configError, setConfigError] = useState("");
   const [account, setAccount] = useState<ConnectedWallet | null>(null),
@@ -690,7 +703,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="header">
-        <a className="brand" href={import.meta.env.BASE_URL} aria-label="Striker home">
+        <a className="brand" href="#/" aria-label="Striker home">
           <span className="brand-mark">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M14.7 2 4 14h7l-1.7 8L21 9h-7.5z" />
@@ -699,9 +712,10 @@ export default function App() {
           striker<span className="brand-period">.</span>
         </a>
         <nav className="main-nav" aria-label="Main navigation">
-          <button className="nav-active" onClick={() => setModal(null)}>
+          <a className={page === "swap" ? "nav-active" : ""} href="#/" aria-current={page === "swap" ? "page" : undefined} onClick={() => setModal(null)}>
             Swap
-          </button>
+          </a>
+          <a className={page === "protocol" ? "nav-active" : ""} href="#/protocol" aria-current={page === "protocol" ? "page" : undefined} onClick={() => setModal(null)}>Protocol</a>
           <button onClick={() => setModal("activity")}>
             Activity
             {history.length > 0 && (
@@ -733,6 +747,7 @@ export default function App() {
         </div>
       </header>
       <main className="main-content">
+        {page === "protocol" ? <ProtocolPage /> : <>
         <section className="hero" aria-labelledby="hero-title">
           <div className="eyebrow">
             <span />
@@ -985,6 +1000,7 @@ export default function App() {
           )}
         </section>
         <HowItWorks assetSymbol={asset.symbol} bitcoinToToken={reverse} />
+        </>}
       </main>
       <footer className="footer">
         <span>Built for the way bitcoin moves.</span>
