@@ -9,7 +9,7 @@ import { args, assetId, connectChain, createWallet, decimal, depositJSON, epochO
   parseDeposit, parseMarketRequest, port, readJSON, required, secretKey, signQuote, writeJSON,
   coinsAt, loadConfig, type Chain, type Deposit } from '@satora/striker-protocol';
 
-const HELP = `maker init | address
+const HELP = `maker init | address | balance [--state FILE]
 maker deposit --asset-id HEX --sats SATS --rate-numerator N --rate-denominator D [--state FILE]
 maker serve [--state FILE] [--host 127.0.0.1] [--port 4101] [--ttl-seconds 30]
 --config-dir DIR defaults to .maker (or MAKER_CONFIG_DIR).
@@ -32,7 +32,7 @@ main(async () => {
   const parsed = args(['asset-id', 'sats', 'rate-numerator', 'rate-denominator', 'state', 'host', 'port', 'ttl-seconds']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'address', 'deposit', 'serve'].includes(command)) throw new Error(HELP);
+  if (!['init', 'address', 'balance', 'deposit', 'serve'].includes(command)) throw new Error(HELP);
   const local = loadConfig('maker', typeof flags['config-dir'] === 'string' ? flags['config-dir'] : undefined);
   const key = secretKey('maker', local.keyDirectory);
   if (command === 'init') {
@@ -65,6 +65,19 @@ main(async () => {
   const actor = await createWallet(chain, key);
   try {
     if (command === 'address') { console.log(JSON.stringify({ address: actor.address })); return; }
+    if (command === 'balance') {
+      let deposit = null;
+      if (existsSync(stateFile)) {
+        const state = loadState(stateFile, chain, key), { tree } = makerContract(chain, state);
+        const coins = await coinsAt(chain, tree);
+        deposit = { address: tree.address('tark', chain.server).encode(),
+          sats: coins.reduce((sum, coin) => sum + coin.value, 0), liveTips: coins.length,
+          availableToSwapSats: coins.length === 1 && coins[0]!.value >= 660 ? coins[0]!.value - 330 : 0 };
+      }
+      console.log(JSON.stringify({ role: 'maker', network: chain.settings.network, address: actor.address,
+        wallet: await actor.wallet.getBalance(), deposit }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+      return;
+    }
     const file = stateFile;
     if (existsSync(file)) throw new Error('State file already exists; refusing to fund a second deposit');
     const wanted = assetId(flags['asset-id']);

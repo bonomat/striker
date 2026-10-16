@@ -6,7 +6,7 @@ import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, 
   parseOffer, parseQuoteRequest, readJSON, requestJSON, required, secretKey, takerContract,
   validateOfferFor, waitFor, writeJSON, loadConfig } from '@satora/striker-protocol';
 
-const HELP = `taker init | address
+const HELP = `taker init | address | balance
 taker issue --amount UNITS  (mint a demo asset on the selected test network)
 taker quote [--striker URL] [--asset-id HEX] [--give-amount UNITS] [--out FILE]
 taker execute [--quote FILE]
@@ -19,7 +19,7 @@ main(async () => {
   const parsed = args(['striker', 'asset-id', 'give-amount', 'amount', 'out', 'quote', 'quote-id']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'address', 'issue', 'quote', 'execute', 'status'].includes(command)) throw new Error(HELP);
+  if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'status'].includes(command)) throw new Error(HELP);
   const local = loadConfig('taker', typeof flags['config-dir'] === 'string' ? flags['config-dir'] : undefined);
   function quoteFile(): string {
     if (typeof flags.quote === 'string') return flags.quote;
@@ -43,6 +43,11 @@ main(async () => {
   const actor = await createWallet(chain, secretKey('taker', local.keyDirectory));
   try {
     if (command === 'address') { console.log(JSON.stringify({ address: actor.address })); return; }
+    if (command === 'balance') {
+      console.log(JSON.stringify({ role: 'taker', network: chain.settings.network, address: actor.address,
+        wallet: await actor.wallet.getBalance() }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+      return;
+    }
     if (command === 'issue') {
       const amount = decimal(flags.amount, '--amount', true);
       const result = await actor.wallet.assetManager.issue({ amount,

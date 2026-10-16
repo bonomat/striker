@@ -305,6 +305,8 @@ just start mutinynet local
 # Another terminal:
 just taker 100 mutinynet local
 just status mutinynet local
+just maker-balance mutinynet local
+just taker-balance mutinynet local
 # Full server-side debugging output:
 just emulator-logs
 # Stop the Emulator when finished:
@@ -338,6 +340,15 @@ inspection. Both profiles use the same maker/Striker ports, so run only one
 service pair at a time. The local profile defaults to 100 asset units per
 trade (500 sats at the demo rate), so the small deposit supports several fills.
 Prices remain static demo prices.
+
+`maker balance` and `taker balance` (or the `just maker-balance` and
+`just taker-balance` recipes) show wallet balances. Wallet BTC amounts are sats;
+asset amounts are atomic units. Maker balance additionally reports the selected
+profile's covenant deposit separately, since deposited liquidity is outside the
+ordinary wallet balance. `availableToSwapSats` retains the 330-sat recursive
+remainder and is zero if the deposit has no unique live tip. Wallet balances
+are shared by the two Mutinynet profiles; the deposit report is specific to the
+selected profile. These commands only read balances and do not request funding.
 
 The local patch submits checkpoints without client signatures, retaining the
 verified signatures locally for finalization, as the wallet SDK flow does. It

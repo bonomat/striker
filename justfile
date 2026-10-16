@@ -62,6 +62,14 @@ maker-address network=network emulator=emulator: build
 taker-address network=network emulator=emulator: build
     STRIKER_NETWORK="$1" STRIKER_EMULATOR="$2" node --experimental-eventsource apps/taker/dist/cli.js address
 
+# Show maker wallet BTC/assets and the selected covenant's remaining liquidity.
+maker-balance network=network emulator=emulator: build
+    STRIKER_NETWORK="$1" STRIKER_EMULATOR="$2" node --experimental-eventsource apps/maker/dist/cli.js balance
+
+# Show taker wallet BTC and asset balances.
+taker-balance network=network emulator=emulator: build
+    STRIKER_NETWORK="$1" STRIKER_EMULATOR="$2" node --experimental-eventsource apps/taker/dist/cli.js balance
+
 regtest-start:
     node scripts/regtest.mjs start
 
