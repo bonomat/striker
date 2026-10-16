@@ -925,6 +925,115 @@ button svg {
 .wallet-summary .status-dot {
   margin-left: auto;
 }
+.wallet-balances {
+  margin: 0 0 24px;
+}
+.wallet-balances-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.wallet-balances-heading h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.wallet-balances-heading .text-button {
+  font-size: 12px;
+  margin: 0;
+}
+.wallet-asset-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+}
+.wallet-asset-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 15px 12px;
+}
+.wallet-asset-row + .wallet-asset-row {
+  border-top: 1px solid var(--line);
+}
+.wallet-asset-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  font-size: 19px;
+}
+.wallet-asset-info,
+.wallet-asset-amount {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.wallet-asset-info strong,
+.wallet-asset-amount strong {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.wallet-asset-info > span,
+.wallet-asset-amount small,
+.wallet-asset-amount strong span {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.wallet-asset-amount {
+  align-items: flex-end;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.wallet-asset-id {
+  font-family: monospace;
+  color: var(--green);
+  font-size: 10px;
+}
+.wallet-asset-id summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.wallet-asset-id code {
+  display: block;
+  margin-top: 7px;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+.wallet-balances-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 12px 0;
+}
+.wallet-address-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin: 20px 0;
+}
+.wallet-address-qr svg {
+  display: block;
+  width: 224px;
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.wallet-address-qr > span {
+  color: var(--muted);
+  font-size: 11px;
+}
 .address-box {
   padding: 16px;
   background: #f0f3ea;

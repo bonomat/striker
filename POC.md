@@ -398,6 +398,19 @@ Anyone with this file can spend the wallet's funds; store it securely. **Restore
 backup** accepts that file and prompts for a new password, without needing the
 old password. These single-key wallets do not have a seed phrase.
 
+Click the connected wallet in the header to view available sats and all held
+Arkade assets, including amounts that are not currently spendable. Token metadata
+supplies names and decimals where available; otherwise the view shows the asset
+ID and exact atomic units. Balances refresh automatically and on demand.
+The wallet and Receive views show a QR code encoding the displayed Arkade address.
+
+Unlocked wallets reconnect after reloads in the same tab. The session keeps an
+encrypted copy of the key in session storage, wrapped with a non-extractable
+CryptoKey in IndexedDB; passwords and plaintext private keys are never saved by
+this mechanism. Locking clears the session, and closing the tab drops its session
+storage. A new session requires the wallet password. If session storage is
+unavailable, the wallet remains usable but requires unlocking after reload.
+
 The locked **Welcome back** screen also offers private-key recovery and confirmed
 deletion (type `DELETE`). Recovery preserves the wallet identity and swap history;
 keys for a different wallet are rejected. Deletion removes the local encrypted key

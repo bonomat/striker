@@ -24,6 +24,9 @@ import {
   type Vault,
 } from "./vault.js";
 import "./style.css";
+import { WalletBalances } from "./WalletBalances.js";
+import { WalletAddress } from "./WalletAddress.js";
+import { walletSession } from "./wallet-session.js";
 
 const short = (text: string) => `${text.slice(0, 9)}…${text.slice(-6)}`;
 const errorMessage = (error: unknown) =>
@@ -168,6 +171,7 @@ export default function App() {
     [balance, setBalance] = useState<WalletBalance | null>(null);
   const [balanceError, setBalanceError] = useState(""),
     [revision, setRevision] = useState(0);
+  const [balanceRefreshing, setBalanceRefreshing] = useState(false);
   const [reverse, setReverse] = useState(true);
   const [amount, setAmount] = useState(""),
     [quote, setQuote] = useState<SavedSwap | null>(null),
@@ -183,6 +187,7 @@ export default function App() {
     [actionError, setActionError] = useState("");
   const [walletBusy, setWalletBusy] = useState(false),
     [walletError, setWalletError] = useState("");
+  const [sessionRemembered, setSessionRemembered] = useState(false);
   const [walletRecovery, setWalletRecovery] = useState<
     "none" | "recover" | "delete"
   >("none");
@@ -251,6 +256,7 @@ export default function App() {
     : 0;
   const receive = quote ? BigInt(quote.response.offer.quote.x) : 0n;
   const refreshing = useRef(false);
+  const sessionRestoreAttempted = useRef(false);
 
   useEffect(() => {
     fetch(`${import.meta.env.BASE_URL}config.json`)
@@ -266,6 +272,7 @@ export default function App() {
   const refreshBalance = useCallback(async () => {
     if (!account || refreshing.current) return;
     refreshing.current = true;
+    setBalanceRefreshing(true);
     try {
       setBalance(await account.wallet.getBalance());
       setBalanceError("");
@@ -273,6 +280,7 @@ export default function App() {
       setBalanceError("Balance unavailable. Try refreshing.");
     } finally {
       refreshing.current = false;
+      setBalanceRefreshing(false);
     }
   }, [account]);
   useEffect(() => {
@@ -285,8 +293,39 @@ export default function App() {
     return () => clearInterval(interval);
   }, [account, refreshBalance]);
   useEffect(() => {
+    if (!config || sessionRestoreAttempted.current) return;
+    sessionRestoreAttempted.current = true;
+    if (!vault) return;
+    let cancelled = false;
+    setWalletBusy(true);
+    void (async () => {
+      try {
+        const secret = await walletSession.restore(vault);
+        if (!secret || cancelled) return;
+        const connected = await connectWallet(config, secret, () =>
+          setRevision((value) => value + 1),
+        );
+        if (cancelled) {
+          await connected.wallet.dispose();
+          return;
+        }
+        setAccount(connected);
+        setSessionRemembered(true);
+      } catch {
+        if (!cancelled)
+          setWalletError("Unable to reconnect. Unlock your wallet to try again.");
+      } finally {
+        if (!cancelled) setWalletBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [config, vault]);
+  useEffect(() => {
     const changed = (event: StorageEvent) => {
       if (event.key === vaultStorageKey) {
+        void walletSession.clear();
         void account?.wallet.dispose();
         setAccount(null);
         setBalance(null);
@@ -400,6 +439,7 @@ export default function App() {
       const connected = await connectWallet(config, key, () =>
         setRevision((value) => value + 1),
       );
+      setSessionRemembered(await walletSession.remember(encrypted, key));
       setAccount(connected);
       setPassword("");
       setConfirmation("");
@@ -480,6 +520,7 @@ export default function App() {
   function deleteSavedWallet() {
     if (walletBusy || account || deleteConfirmation !== "DELETE") return;
     localStorage.removeItem(vaultStorageKey);
+    void walletSession.clear();
     setVault(null);
     setQuote(null);
     setSelected(null);
@@ -646,13 +687,18 @@ export default function App() {
           </span>
           <button
             className="connect-button"
+            disabled={walletBusy}
+            aria-busy={walletBusy}
             onClick={() => {
               setWalletError("");
               setModal("wallet");
+              void refreshBalance();
             }}
           >
             <WalletIcon />
-            <span>{account ? short(account.address) : "Connect wallet"}</span>
+            <span>
+              {account ? short(account.address) : walletBusy ? "Opening wallet…" : "Connect wallet"}
+            </span>
           </button>
         </div>
       </header>
@@ -980,7 +1026,20 @@ export default function App() {
                 {config?.network === "regtest" ? "Regtest" : "Mutinynet"} wallet
                 · Keys held in this browser
               </p>
-              <div className="address-box">{account.address}</div>
+              <WalletBalances
+                account={account}
+                balance={balance}
+                asset={asset}
+                refreshing={balanceRefreshing}
+                error={balanceError}
+                refresh={() => void refreshBalance()}
+              />
+              <p className="small-print">
+                {sessionRemembered
+                  ? "Stays unlocked in this tab until you lock it or close the tab."
+                  : "Unlock with your password again after reloading this tab."}
+              </p>
+              <WalletAddress address={account.address} />
               <button
                 className="secondary-button"
                 onClick={() => void copyAddress()}
@@ -1006,6 +1065,7 @@ export default function App() {
                 className="text-button lock-wallet"
                 disabled={busy}
                 onClick={() => {
+                  void walletSession.clear();
                   void account.wallet.dispose();
                   setAccount(null);
                   setQuote(null);
@@ -1246,7 +1306,7 @@ export default function App() {
             <span className="status-dot" />
             {config?.network === "regtest" ? "Regtest" : "Mutinynet"} · Arkade
           </div>
-          <div className="address-box">{account.address}</div>
+          <WalletAddress address={account.address} />
           <button
             className="swap-button modal-primary"
             onClick={() => void copyAddress()}
