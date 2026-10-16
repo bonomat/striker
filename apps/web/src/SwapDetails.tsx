@@ -61,21 +61,36 @@ export function SwapDetails({
     network === "mutinynet" && /^[0-9a-f]{64}$/i.test(txid)
       ? `https://explorer.mutinynet.arkade.sh/tx/${txid}` : undefined;
   return (
-    <dl className="swap-identifiers" aria-label="Swap identifiers">
-      <Identifier label="Quote ID" value={quoteId} key={quoteId} />
-      {depositInputs?.map((input, i) => <Identifier label={`Deposit ${i + 1} transaction ID (output ${input.coin.vout})`}
-        value={input.coin.txid} href={explorerLink(input.coin.txid)} key={`deposit:${input.coin.txid}:${input.coin.vout}`} />)}
-      {fundingTxid && <Identifier label="Funding transaction ID" value={fundingTxid}
-        href={explorerLink(fundingTxid)} key={`funding:${fundingTxid}`} />}
-      {fundingVout !== undefined && (
-        <div className="swap-identifier"><dt>Funding output</dt><dd>{fundingVout}</dd></div>
-      )}
-      {settlementTxid && <Identifier label="Settlement transaction ID" value={settlementTxid}
-        href={explorerLink(settlementTxid)} key={`settlement:${settlementTxid}`} />}
-      {cancellationTxid && <Identifier label="Cancellation transaction ID" value={cancellationTxid}
-        href={explorerLink(cancellationTxid)} key={`cancel:${cancellationTxid}`} />}
-      {refundTxid && <Identifier label="Refund transaction ID" value={refundTxid}
-        href={explorerLink(refundTxid)} key={`refund:${refundTxid}`} />}
-    </dl>
+    <div className="swap-identifiers">
+      {(settlementTxid || cancellationTxid || refundTxid) && <dl className="swap-transaction-summary" aria-label="Swap transactions">
+        {settlementTxid && <Identifier label="Swap transaction" value={settlementTxid}
+          href={explorerLink(settlementTxid)} key={`settlement:${settlementTxid}`} />}
+        {cancellationTxid && <Identifier label="Cancellation transaction" value={cancellationTxid}
+          href={explorerLink(cancellationTxid)} key={`cancel:${cancellationTxid}`} />}
+        {refundTxid && <Identifier label="Refund transaction" value={refundTxid}
+          href={explorerLink(refundTxid)} key={`refund:${refundTxid}`} />}
+      </dl>}
+      <details className="swap-technical-details">
+        <summary>Technical details</summary>
+        <dl aria-label="Swap technical details">
+          <Identifier label="Quote ID" value={quoteId} key={quoteId} />
+          {!!depositInputs?.length && <div className="swap-inputs">
+            <dt>Inputs used</dt>
+            <dd>
+              <p>Existing wallet coins spent by this swap.</p>
+              <dl>
+                {depositInputs.map((input, i) => <Identifier label={`Wallet input ${i + 1} (output ${input.coin.vout})`}
+                  value={input.coin.txid} href={explorerLink(input.coin.txid)} key={`deposit:${input.coin.txid}:${input.coin.vout}`} />)}
+              </dl>
+            </dd>
+          </div>}
+          {fundingTxid && <Identifier label="Funding transaction ID" value={fundingTxid}
+            href={explorerLink(fundingTxid)} key={`funding:${fundingTxid}`} />}
+          {fundingVout !== undefined && (
+            <div className="swap-identifier"><dt>Funding output</dt><dd>{fundingVout}</dd></div>
+          )}
+        </dl>
+      </details>
+    </div>
   );
 }
