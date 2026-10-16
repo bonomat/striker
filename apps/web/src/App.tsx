@@ -253,7 +253,7 @@ export default function App() {
   const refreshing = useRef(false);
 
   useEffect(() => {
-    fetch("/config.json")
+    fetch(`${import.meta.env.BASE_URL}config.json`)
       .then((response) => {
         if (!response.ok) throw new Error("Unable to load the market.");
         return response.json();
@@ -619,7 +619,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="header">
-        <a className="brand" href="/" aria-label="Striker home">
+        <a className="brand" href={import.meta.env.BASE_URL} aria-label="Striker home">
           <span className="brand-mark">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M14.7 2 4 14h7l-1.7 8L21 9h-7.5z" />

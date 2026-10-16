@@ -22,12 +22,26 @@ const settings = networkSettings(),
     path.resolve(root, process.env.TAKER_CONFIG_DIR ?? ".taker"),
   );
 const configured = process.env.WEB_ASSET_ID ?? taker.config.assetId;
+const staticSite = process.env.WEB_STATIC === "true";
+const strikerUrl = process.env.WEB_STRIKER_URL;
+if (staticSite) {
+  if (!strikerUrl) throw new Error("WEB_STRIKER_URL is required for static hosting");
+  if (!configured) throw new Error("WEB_ASSET_ID is required for static hosting");
+  for (const [name, value] of Object.entries({ WEB_STRIKER_URL: strikerUrl, ARK_URL: settings.arkUrl, EMULATOR_URL: settings.emulatorUrl, ESPLORA_URL: settings.esploraUrl })) {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
+      throw new Error(`${name} must be a public HTTPS URL without credentials, query or fragment`);
+    if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]")
+      throw new Error(`${name} cannot be a loopback endpoint on a static site`);
+  }
+}
 const symbol = process.env.WEB_ASSET_SYMBOL ?? "POC";
 const decimals = Number(process.env.WEB_ASSET_DECIMALS ?? "0");
 if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18)
   throw new Error("Invalid WEB_ASSET_DECIMALS");
 const config: AppConfig = {
   ...settings,
+  ...(staticSite ? { strikerUrl: strikerUrl!.replace(/\/$/, "") } : {}),
   asset: {
     id: typeof configured === "string" ? assetId(configured) : null,
     symbol,
@@ -49,7 +63,7 @@ const publicConfig = (): Plugin => {
         res.end("Not found");
         return;
       }
-      if (req.url?.split("?")[0] !== "/config.json") return next();
+      if (req.url?.split("?")[0] !== `${server.config.base}config.json`) return next();
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store");
       res.end(json);
@@ -97,6 +111,7 @@ const host = process.env.WEB_HOST ?? "127.0.0.1";
 const port = Number(process.env.WEB_PORT ?? "5173");
 const allowedHosts = process.env.WEB_ALLOWED_HOSTS?.split(",") ?? [];
 export default defineConfig({
+  base: process.env.WEB_BASE_PATH ?? "/",
   root: path.join(root, "apps/web"),
   plugins: [react(), publicConfig()],
   server: {

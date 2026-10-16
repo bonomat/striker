@@ -90,5 +90,5 @@ main(async () => {
         order.status = 'failed';
         throw new HttpError(409, error instanceof Error ? error.message : 'Execution failed');
       }
-    });
+    }, (process.env.STRIKER_ALLOWED_ORIGINS ?? '').split(',').map(origin => origin.trim()).filter(Boolean));
 });
