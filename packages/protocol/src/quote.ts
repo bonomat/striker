@@ -10,15 +10,16 @@ export const OFFSETS = { x: DOMAIN.length + 32 + 34 + 34, y: DOMAIN.length + 108
 export const MESSAGE_LENGTH = DOMAIN.length + 132;
 
 export interface Deposit {
+  direction?: 'token-to-btc' | 'btc-to-token';
   lineage: Uint8Array;
   makerPublicKey: Uint8Array;
-  wantAsset: Uint8Array; // SDK AssetId.serialize(): 32-byte txid + uint16 LE group.
+  wantAsset: Uint8Array; // Market token: wanted in v0; offered in reverse v1.
   payoutScript: Uint8Array; // P2TR scriptPubKey, including OP_1 PUSH32.
 }
 
 export interface Quote {
-  x: bigint; // BTC sats drawn from the maker deposit.
-  y: bigint; // Units of the Arkade asset paid to the maker.
+  x: bigint; // Maker pays: BTC sats in v0, token atomic units in reverse v1.
+  y: bigint; // Taker pays: token atomic units in v0, BTC sats in reverse v1.
   epoch: bigint;
   deadline: bigint; // Unix seconds; exclusive upper bound at VM validation time.
 }
@@ -40,6 +41,8 @@ export function u63(value: bigint): Uint8Array {
 }
 
 export function validateDeposit(d: Deposit): void {
+  if (d.direction !== undefined && d.direction !== 'token-to-btc' && d.direction !== 'btc-to-token')
+    throw new Error('Invalid swap direction');
   if (d.lineage.length !== 32 || d.makerPublicKey.length !== 32 || d.wantAsset.length !== 34)
     throw new Error('Invalid deposit field length');
   if (d.payoutScript.length !== 34 || d.payoutScript[0] !== 0x51 || d.payoutScript[1] !== 0x20)
@@ -48,7 +51,9 @@ export function validateDeposit(d: Deposit): void {
 
 export function quotePrefix(d: Deposit): Uint8Array {
   validateDeposit(d);
-  return concat(DOMAIN, d.lineage, d.wantAsset, d.payoutScript);
+  // Reverse quotes have a distinct signed domain; existing v0 forward scripts stay valid.
+  const domain = d.direction === 'btc-to-token' ? new TextEncoder().encode('striker/quote/v1\0') : DOMAIN;
+  return concat(domain, d.lineage, d.wantAsset, d.payoutScript);
 }
 
 export function encodeQuote(d: Deposit, q: Quote): Uint8Array {

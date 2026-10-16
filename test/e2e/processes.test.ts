@@ -1,14 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, execFile, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { TakerClient, type SavedSwap } from '@satora/taker-sdk';
+import { attachPrevArkTxs, Transaction } from '@arkade-os/sdk';
 import { connectChain, createWallet, fundedCoin, hex, makerContract, object, parseOffer,
-  requestJSON, waitFor } from '@satora/striker-protocol';
+  requestJSON, waitFor, takerContract, liveMaker, buildSettlement, signQuote, encodeBase64 } from '@satora/striker-protocol';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -139,5 +141,63 @@ test('independent maker, striker, and taker processes trade exclusively through 
     await t.test('Striker validates HTTP amount types before contacting makers', async () => {
       await assert.rejects(requestJSON(`${striker.url}/v1/quotes`, { assetId, giveAmount: 2000,
         takerPublicKey: hex(taker.publicKey), takerPayoutScript: hex(taker.payoutScript) }), /Invalid giveAmount/);
+    });
+    await t.test('BTC-only users buy tokens through Striker, the token deposit recurs, and BTC refunds work', async () => {
+      const reverseFile = path.join(directory, 'reverse.json');
+      await command('maker', ['deposit', '--direction', 'btc-to-token', '--asset-id', assetId,
+        '--sats', '660', '--tokens', '1000', '--rate-numerator', '5', '--rate-denominator', '1', '--state', reverseFile], betterKey);
+      const reverseMaker = await start('maker', ['serve', '--state', reverseFile], betterKey);
+      const reverseStriker = await start('striker', ['serve', '--makers', reverseMaker.url]);
+      const records = new Map<string, SavedSwap>();
+      const client = new TakerClient({ chain, actor: first, strikerUrl: reverseStriker.url,
+        store: { async get(id) { return records.get(id); }, async put(saved) { records.set(saved.response.quoteId, saved); } } });
+      assert.equal((await first.wallet.getBalance()).availableAssets.find(a => a.assetId === assetId), undefined);
+      const quote = await client.quote(assetId, '500', 'btc-to-token');
+      assert.equal(quote.response.offer.quote.x, '100');
+      // Direction is bound by the signed domain and request validation.
+      assert.throws(() => client.verify({ ...quote.request, direction: 'token-to-btc' }, quote.response), /requested trade/);
+      const offer = parseOffer(quote.response.offer);
+      const user = takerContract(chain, first.publicKey, first.payoutScript, offer.quote.x, offer.deposit.wantAsset);
+      const fundingTxid = await first.wallet.send({ address: user.address, amount: 830 });
+      const userCoin = await fundedCoin(chain, user.tree, fundingTxid);
+      quote.funding = { fundingTxid, fundingVout: String(userCoin.vout) };
+      await client.options.store.put(quote);
+      const live = await liveMaker(chain, offer);
+      const terms = { ...offer, makerCoin: live.coin, userCoin, makerTree: live.tree, userTree: user.tree,
+        makerScript: live.script, userScript: user.script, userPayout: first.payoutScript, checkpoint: chain.checkpoint };
+      const errors = () => {
+        const result = spawnSync('docker', ['logs', process.env.EMULATOR_CONTAINER ?? 'striker-poc-emulator'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
+        assert.equal(result.status, 0);
+        return (result.stdout + result.stderr).split('\n').filter(line => line.includes('failed to execute arkade script')).length;
+      };
+      async function rejectsCovenant(mutate: (tx: Transaction) => void, lower = false) {
+        const q = lower ? { ...offer.quote, x: 99n } : offer.quote;
+        const built = buildSettlement({ ...terms, quote: q, signature: signQuote(offer.deposit, q, betterKey) });
+        mutate(built.arkTx);
+        await attachPrevArkTxs(built.arkTx, [live.coin.txid, userCoin.txid], chain.indexer);
+        const before = errors();
+        await assert.rejects(chain.emulator.submitTx(encodeBase64(built.arkTx.toPSBT()), built.checkpoints.map(cp => encodeBase64(cp.toPSBT()))), /internal error|failed to execute arkade script/i);
+        assert.equal(errors(), before + 1, 'The actual covenant must reject the altered transaction');
+      }
+      await rejectsCovenant(tx => { tx.updateOutput(2, { amount: 499n }); tx.updateOutput(0, { amount: 331n }); });
+      await rejectsCovenant(tx => tx.updateOutput(1, { script: first.payoutScript }));
+      await rejectsCovenant(tx => tx.updateOutput(0, { script: better.payoutScript }));
+      await rejectsCovenant(() => {}, true);
+      const result = await client.execute(quote.response.quoteId);
+      assert.equal(result.status, 'settled');
+      await waitFor(async () => BigInt((await first.wallet.getBalance()).availableAssets.find(a => a.assetId === assetId)?.amount ?? 0) === 100n ? true : undefined, 'bought tokens');
+      const contract = makerContract(chain, parseOffer(quote.response.offer));
+      const remaining = await fundedCoin(chain, contract.tree, result.txid!);
+      assert.equal(remaining.value, 660);
+      assert.equal(BigInt(remaining.assets![0]!.amount), 900n);
+      const next = await client.quote(assetId, '500', 'btc-to-token');
+      assert.equal((await client.execute(next.response.quoteId)).status, 'settled');
+      const refundable = await client.quote(assetId, '500', 'btc-to-token');
+      const txid = await first.wallet.send({ address: refundable.response.fundingAddress, amount: 830 });
+      refundable.funding = { fundingTxid: txid };
+      await client.options.store.put(refundable);
+      const returned = await client.refund(refundable.response.quoteId);
+      assert.match(returned, /^[0-9a-f]{64}$/);
+      assert.equal(await client.refund(refundable.response.quoteId), returned);
     });
   });

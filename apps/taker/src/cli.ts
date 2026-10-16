@@ -5,7 +5,7 @@ import { TakerClient, type SavedSwap, type SwapStore } from '@satora/taker-sdk';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, hex, main, object,
   parseOffer, parseQuoteRequest, readJSON, requestJSON, required, secretKey, takerContract,
-  validateOfferFor, waitFor, writeJSON, loadConfig } from '@satora/striker-protocol';
+  validateOfferFor, waitFor, writeJSON, loadConfig, parseDirection } from '@satora/striker-protocol';
 
 const HELP = `taker init | address | balance
 taker issue --amount UNITS  (mint a demo asset on the selected test network)
@@ -17,7 +17,7 @@ The private key is generated once in DIR/private-key. TAKER_PRIVATE_KEY imports 
 Execute/status use the most recent saved quote by default. All swaps go through Striker.`;
 
 main(async () => {
-  const parsed = args(['striker', 'asset-id', 'give-amount', 'amount', 'out', 'quote', 'quote-id']);
+  const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'out', 'quote', 'quote-id']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
   if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status'].includes(command)) throw new Error(HELP);
@@ -78,7 +78,7 @@ main(async () => {
     const client = new TakerClient({ chain, actor, strikerUrl: striker, store });
     if (command === 'quote') {
       const swap = await client.quote(assetId(flags['asset-id'] ?? local.config.assetId),
-        decimal(flags['give-amount'] ?? local.config.giveAmount, 'giveAmount', true).toString());
+        decimal(flags['give-amount'] ?? local.config.giveAmount, 'giveAmount', true).toString(), parseDirection(flags.direction));
       console.log(JSON.stringify({ ...swap.response, quoteFile: path.resolve(file!) }));
     } else if (command === 'refund') {
       const txid = await client.refund(saved!.response.quoteId);

@@ -165,6 +165,7 @@ export default function App() {
     [balance, setBalance] = useState<WalletBalance | null>(null);
   const [balanceError, setBalanceError] = useState(""),
     [revision, setRevision] = useState(0);
+  const [reverse, setReverse] = useState(true);
   const [amount, setAmount] = useState(""),
     [quote, setQuote] = useState<SavedSwap | null>(null),
     [quoting, setQuoting] = useState(false);
@@ -213,17 +214,23 @@ export default function App() {
     balance?.availableAssets.find((entry) => entry.assetId === asset.id)
       ?.amount ?? 0,
   );
+  const sendSymbol = reverse ? "BTC" : asset.symbol;
+  const receiveSymbol = reverse ? asset.symbol : "BTC";
+  const sendDecimals = reverse ? 8 : asset.decimals;
+  const receiveDecimals = reverse ? asset.decimals : 8;
+  const availableSend = reverse ? BigInt(Math.max(0, (balance?.available ?? 0) - 330)) : availableAsset;
+  const availableReceive = reverse ? availableAsset : BigInt(balance?.available ?? 0);
   let units = 0n,
     amountError = "";
   if (amount) {
     try {
-      units = parseAmount(amount, asset.decimals);
+      units = parseAmount(amount, sendDecimals);
     } catch (error) {
       amountError = errorMessage(error);
     }
   }
-  const insufficient = !!balance && units > availableAsset;
-  const needsCarrier = !!balance && balance.available < 330;
+  const insufficient = !!balance && units > availableSend;
+  const needsCarrier = !!balance && balance.available < (reverse ? 660 : 330);
   const expires = quote
     ? Math.max(
         0,
@@ -299,7 +306,7 @@ export default function App() {
     const timer = setTimeout(() => {
       setQuoting(true);
       account.client
-        .quote(asset.id!, units.toString())
+        .quote(asset.id!, units.toString(), reverse ? "btc-to-token" : "token-to-btc")
         .then((result) => {
           if (!cancelled) setQuote(result);
         })
@@ -322,6 +329,7 @@ export default function App() {
   }, [
     account,
     asset.id,
+    reverse,
     units,
     amountError,
     insufficient,
@@ -404,8 +412,8 @@ export default function App() {
     }
   }
   function percentage(percent: number) {
-    const quantity = (availableAsset * BigInt(percent)) / 100n;
-    setAmount(quantity ? formatAmount(quantity, asset.decimals) : "");
+    const quantity = (availableSend * BigInt(percent)) / 100n;
+    setAmount(quantity ? formatAmount(quantity, sendDecimals) : "");
   }
   function inspect(swap: SavedSwap) {
     setSelected(swap.response.quoteId);
@@ -480,7 +488,7 @@ export default function App() {
             : amountError
               ? "Check the amount"
               : insufficient
-                ? `Not enough ${asset.symbol}`
+                ? `Not enough ${sendSymbol}`
                 : needsCarrier
                   ? "Add BTC to your wallet"
                   : quoting
@@ -570,7 +578,7 @@ export default function App() {
             THE SHORTEST WAY TO BITCOIN
           </div>
           <h1 id="hero-title">
-            {asset.symbol} to <em>Bitcoin.</em>
+            {reverse ? "Bitcoin" : asset.symbol} to <em>{reverse ? `${asset.symbol}.` : "Bitcoin."}</em>
           </h1>
           <p>One swap. All on Arkade. Always your wallet.</p>
         </section>
@@ -579,7 +587,7 @@ export default function App() {
             <div className="amount-card send-card">
               <div className="card-topline">
                 <label htmlFor="send-amount">You send</label>
-                {asset.demo && <span className="demo-badge">DEMO ASSET</span>}
+                {asset.demo && !reverse && <span className="demo-badge">DEMO ASSET</span>}
               </div>
               <div className="amount-row">
                 <input
@@ -595,9 +603,9 @@ export default function App() {
                   aria-invalid={!!amountError || insufficient}
                 />
                 <div className="asset-name">
-                  <Coin symbol={asset.symbol} />
+                  <Coin symbol={sendSymbol} bitcoin={reverse} />
                   <div>
-                    <strong>{asset.symbol}</strong>
+                    <strong>{sendSymbol}</strong>
                     <span>Arkade</span>
                   </div>
                 </div>
@@ -607,10 +615,10 @@ export default function App() {
                   Balance:{" "}
                   <b>
                     {account && balance
-                      ? formatAmount(availableAsset, asset.decimals)
+                      ? formatAmount(availableSend, sendDecimals)
                       : "—"}
                   </b>{" "}
-                  {asset.symbol}
+                  {sendSymbol}
                 </span>
                 <div className="percentages">
                   {[25, 50, 75, 100].map((percent) => (
@@ -625,12 +633,13 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <div className="direction-arrow">
-              <Arrow />
-            </div>
+            <button className="direction-arrow" aria-label="Switch swap direction" title="Switch swap direction" disabled={busy || !!pending} onClick={() => { setReverse(value => !value); setAmount(""); setQuote(null); setQuoteError(""); }}>
+              <Icon><path d="M8 3v18m-4-4 4 4 4-4M16 21V3m-4 4 4-4 4 4" /></Icon>
+            </button>
             <div className="amount-card receive-card">
               <div className="card-topline">
                 <span>You receive</span>
+                {asset.demo && reverse && !quote && <span className="demo-badge">DEMO ASSET</span>}
                 {quote && (
                   <span
                     className={`quote-clock ${expires < 10 ? "expiring" : ""}`}
@@ -645,20 +654,20 @@ export default function App() {
                   className={
                     quote ? "receive-value has-value" : "receive-value"
                   }
-                  aria-label="Bitcoin receive amount"
+                  aria-label={`${receiveSymbol} receive amount`}
                 >
                   {quoting ? (
                     <span className="amount-skeleton" />
                   ) : quote ? (
-                    formatAmount(receive, 8, false)
+                    formatAmount(receive, receiveDecimals, reverse)
                   ) : (
                     "0"
                   )}
                 </output>
                 <div className="asset-name">
-                  <Coin bitcoin />
+                  <Coin bitcoin={!reverse} symbol={receiveSymbol} />
                   <div>
-                    <strong>BTC</strong>
+                    <strong>{receiveSymbol}</strong>
                     <span>Arkade</span>
                   </div>
                 </div>
@@ -667,13 +676,13 @@ export default function App() {
                 <span className="balance-text">
                   Balance:{" "}
                   <b>
-                    {balance ? formatAmount(BigInt(balance.available), 8) : "—"}
+                    {balance ? formatAmount(availableReceive, receiveDecimals) : "—"}
                   </b>{" "}
-                  BTC
+                  {receiveSymbol}
                 </span>
                 {quote && (
                   <span className="sats-label">
-                    {receive.toLocaleString()} sats
+                    {reverse ? `${formatAmount(receive, asset.decimals)} ${asset.symbol}` : `${receive.toLocaleString()} sats`}
                   </span>
                 )}
               </div>
@@ -707,8 +716,7 @@ export default function App() {
                   <span>330 sats</span>
                 </div>
                 <p>
-                  The carrier travels with your token payment to the maker. It
-                  comes from your BTC balance.
+                  {reverse ? "The 330 sats carrier stays with the tokens you receive in your wallet." : "The carrier travels with your token payment to the maker. It comes from your BTC balance."}
                 </p>
               </div>
             )}
@@ -1072,9 +1080,9 @@ export default function App() {
                     <strong>
                       {formatAmount(
                         BigInt(swap.request.giveAmount),
-                        asset.decimals,
+                        swap.request.direction === "btc-to-token" ? 8 : asset.decimals,
                       )}{" "}
-                      {asset.symbol} → BTC
+                      {swap.request.direction === "btc-to-token" ? `BTC → ${asset.symbol}` : `${asset.symbol} → BTC`}
                     </strong>
                     <small>
                       {swap.createdAt
@@ -1110,24 +1118,24 @@ export default function App() {
           </p>
           <div className="review-assets">
             <div>
-              <Coin symbol={asset.symbol} />
+              <Coin symbol={sendSymbol} bitcoin={reverse} />
               <span>
                 You send
                 <strong>
                   {formatAmount(
                     BigInt(quote.request.giveAmount),
-                    asset.decimals,
+                    sendDecimals,
                   )}{" "}
-                  {asset.symbol}
+                  {sendSymbol}
                 </strong>
               </span>
             </div>
             <Arrow />
             <div>
-              <Coin bitcoin />
+              <Coin bitcoin={!reverse} symbol={receiveSymbol} />
               <span>
                 You receive
-                <strong>{formatAmount(receive, 8, false)} BTC</strong>
+                <strong>{formatAmount(receive, receiveDecimals, reverse)} {receiveSymbol}</strong>
               </span>
             </div>
           </div>
@@ -1199,9 +1207,9 @@ export default function App() {
           </div>
           <p className="result-caption">
             {succeeded
-              ? "Swap complete. Your bitcoin is in your Arkade wallet."
+              ? "Swap complete. Your assets are in your Arkade wallet."
               : refunded
-                ? "Your unspent token payment has been returned."
+                ? "Your unspent payment has been returned."
                 : busy
                   ? "Keep this window open while your swap settles."
                   : "Check the swap status, resume execution, or return an unspent offer."}
@@ -1211,18 +1219,18 @@ export default function App() {
               <span>
                 {formatAmount(
                   BigInt(displayedSwap.request.giveAmount),
-                  asset.decimals,
+                  displayedSwap.request.direction === "btc-to-token" ? 8 : asset.decimals,
                 )}{" "}
-                {asset.symbol}
+                {displayedSwap.request.direction === "btc-to-token" ? "BTC" : asset.symbol}
               </span>
               <span>→</span>
               <strong>
                 {formatAmount(
                   BigInt(displayedSwap.response.offer.quote.x),
-                  8,
-                  false,
+                  displayedSwap.request.direction === "btc-to-token" ? asset.decimals : 8,
+                  displayedSwap.request.direction === "btc-to-token",
                 )}{" "}
-                BTC
+                {displayedSwap.request.direction === "btc-to-token" ? asset.symbol : "BTC"}
               </strong>
             </div>
           )}

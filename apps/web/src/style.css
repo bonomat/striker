@@ -400,6 +400,8 @@ button svg {
   opacity: 0.55;
 }
 .direction-arrow {
+  cursor: pointer;
+  padding: 0;
   margin: -10px auto;
   position: relative;
   z-index: 1;
@@ -413,6 +415,9 @@ button svg {
   color: #9ba98c;
   box-sizing: content-box;
 }
+.direction-arrow:hover:not(:disabled) { color: #34471c; background: #e7f5c8; }
+.direction-arrow:focus-visible { outline: 2px solid #526c25; outline-offset: 3px; }
+.direction-arrow:disabled { cursor: default; }
 .direction-arrow svg {
   width: 17px;
   height: 17px;

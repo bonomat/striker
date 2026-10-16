@@ -29,6 +29,19 @@ export function makerCovenant(d: Deposit): Uint8Array {
     ...field(OFFSETS.epoch, false),
     EPOCH_PACKET, 'PUSHCURRENTINPUTINDEX', 'INSPECTINPUTPACKET', 'VERIFY', 'EQUALVERIFY',
     ...field(OFFSETS.epoch, false), EPOCH_PACKET, 'INSPECTPACKET', 'VERIFY', 'EQUALVERIFY',
+    ...(d.direction === 'btc-to-token' ? [
+      // Output 0 pays X tokens; output 1 preserves the maker's asset remainder and carrier.
+      ...field(OFFSETS.x), 0, assetTxid, assetGroup, 'INSPECTOUTASSETLOOKUP', 'VERIFY', 'NUMEQUALVERIFY',
+      ...field(OFFSETS.x), 'PUSHCURRENTINPUTINDEX', assetTxid, assetGroup, 'INSPECTINASSETLOOKUP', 'VERIFY',
+      'SWAP', 'SUB',
+      'DUP', 0, 'GREATERTHAN', 'VERIFY',
+      1, assetTxid, assetGroup, 'INSPECTOUTASSETLOOKUP', 'VERIFY', 'NUMEQUALVERIFY',
+      'PUSHCURRENTINPUTINDEX', 'INSPECTINPUTVALUE', 1, 'INSPECTOUTPUTVALUE', 'NUMEQUALVERIFY',
+      'PUSHCURRENTINPUTINDEX', 'INSPECTINPUTSCRIPTPUBKEY', 1, 'EQUALVERIFY',
+      1, 'INSPECTOUTPUTSCRIPTPUBKEY', 1, 'EQUALVERIFY', 'EQUALVERIFY',
+      2, 'INSPECTOUTPUTSCRIPTPUBKEY', 1, 'EQUALVERIFY', d.payoutScript.slice(2), 'EQUALVERIFY',
+      ...field(OFFSETS.y), 2, 'INSPECTOUTPUTVALUE', 'NUMEQUALVERIFY',
+    ] as Ops : [
     // Output 0 gives exactly X sats to the user (destination enforced by Banco).
     ...field(OFFSETS.x), 0, 'INSPECTOUTPUTVALUE', 'NUMEQUALVERIFY',
     // Output 1 recursively preserves this deposit and its remaining BTC.
@@ -41,7 +54,20 @@ export function makerCovenant(d: Deposit): Uint8Array {
     2, 'INSPECTOUTPUTSCRIPTPUBKEY', 1, 'EQUALVERIFY', d.payoutScript.slice(2), 'EQUALVERIFY',
     ...field(OFFSETS.y), 2, assetTxid, assetGroup, 'INSPECTOUTASSETLOOKUP', 'VERIFY',
     'SWAP', 'GREATERTHANOREQUAL', 'VERIFY',
+    ] as Ops),
     'DROP', 1,
+  ]);
+}
+
+export function tokenUserCovenant(payoutScript: Uint8Array, minimum: bigint, token: Uint8Array): Uint8Array {
+  if (minimum <= 0n || token.length !== 34 || payoutScript.length !== 34 || payoutScript[0] !== 0x51 || payoutScript[1] !== 0x20)
+    throw new Error('Invalid user terms');
+  const txid = token.slice(0, 32).reverse();
+  const group = new DataView(token.buffer, token.byteOffset + 32, 2).getUint16(0, true);
+  return arkade.ArkadeScript.encode([
+    0, txid, group, 'INSPECTOUTASSETLOOKUP', 'VERIFY', minimum, 'GREATERTHANOREQUAL', 'VERIFY',
+    0, 'INSPECTOUTPUTVALUE', 330, 'GREATERTHANOREQUAL', 'VERIFY',
+    0, 'INSPECTOUTPUTSCRIPTPUBKEY', 1, 'EQUALVERIFY', payoutScript.slice(2), 'EQUAL',
   ]);
 }
 

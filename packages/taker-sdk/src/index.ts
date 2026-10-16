@@ -24,6 +24,7 @@ import {
   type Chain,
   type QuoteRequest,
   type QuoteResponse,
+  type Direction,
 } from "@satora/striker-protocol/browser";
 
 export interface SwapResult {
@@ -103,16 +104,18 @@ export class TakerClient {
       actor.publicKey,
       actor.payoutScript,
       offer.quote.x,
+      offer.deposit.direction === 'btc-to-token' ? offer.deposit.wantAsset : undefined,
     );
     if (response.fundingAddress !== contract.address)
       throw new Error("Striker returned an incorrect funding address");
     swapId(response.quoteId);
     return { response: response as unknown as QuoteResponse, offer, contract };
   }
-  async quote(assetId: string, amount: string): Promise<SavedSwap> {
+  async quote(assetId: string, amount: string, direction: Direction = 'token-to-btc'): Promise<SavedSwap> {
     const request = parseQuoteRequest({
       assetId,
       giveAmount: amount,
+      ...(direction === 'btc-to-token' ? { direction } : {}),
       takerPublicKey: hex(this.options.actor.publicKey),
       takerPayoutScript: hex(this.options.actor.payoutScript),
     });
@@ -181,11 +184,14 @@ export class TakerClient {
           );
         // Persist intent first: a reload or uncertain network failure must never fund twice.
         saved.fundingStartedAt = Date.now();
+        const reverse = offer.deposit.direction === 'btc-to-token';
+        const sats = reverse ? offer.quote.y + 330n : 330n;
+        if (sats > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('BTC amount exceeds wallet precision');
         await this.options.store.put(saved);
         const txid = await this.options.actor.wallet.send({
           address: contract.address,
-          amount: 330,
-          assets: [{ assetId: saved.request.assetId, amount: offer.quote.y }],
+          amount: Number(sats),
+          ...(reverse ? {} : { assets: [{ assetId: saved.request.assetId, amount: offer.quote.y }] }),
         });
         saved.funding = { fundingTxid: hex(bytes(txid, 32, "fundingTxid")) };
         await this.options.store.put(saved);
@@ -241,11 +247,12 @@ export class TakerClient {
             ? undefined
             : Number(saved.funding.fundingVout),
         );
-        if (
+        const reverse = offer.deposit.direction === 'btc-to-token';
+        if (reverse ? (coin.assets?.length || BigInt(coin.value) !== offer.quote.y + 330n) : (
           coin.assets?.length !== 1 ||
           coin.assets[0]?.assetId !== saved.request.assetId ||
           BigInt(coin.assets[0].amount) !== offer.quote.y
-        )
+        ))
           throw new Error("Funding does not match the saved swap");
         const packet = asset.Packet.create([
           asset.AssetGroup.create(
@@ -261,7 +268,7 @@ export class TakerClient {
           [{ ...coin, tapTree: contract.tree.encode(), tapLeafScript: leaf }],
           [
             { script: actor.payoutScript, amount: BigInt(coin.value) },
-            Extension.create([packet]).txOut(),
+            ...(reverse ? [] : [Extension.create([packet]).txOut()]),
           ],
           chain.checkpoint,
         );

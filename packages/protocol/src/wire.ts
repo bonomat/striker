@@ -33,11 +33,13 @@ export function p2tr(value: unknown, field: string): Uint8Array {
 }
 export function depositJSON(d: Deposit) {
   return { lineage: hex(d.lineage), makerPublicKey: hex(d.makerPublicKey),
+    ...(d.direction === 'btc-to-token' ? { direction: d.direction } : {}),
     wantAsset: hex(d.wantAsset), payoutScript: hex(d.payoutScript) };
 }
 export function parseDeposit(value: unknown): Deposit {
   const d = object(value);
   const deposit = { lineage: bytes(d.lineage, 32, 'lineage'), makerPublicKey: bytes(d.makerPublicKey, 32, 'makerPublicKey'),
+    ...(d.direction === undefined ? {} : { direction: parseDirection(d.direction) }),
     wantAsset: bytes(d.wantAsset, 34, 'wantAsset'), payoutScript: p2tr(d.payoutScript, 'payoutScript') };
   validateDeposit(deposit);
   return deposit;
@@ -60,10 +62,17 @@ export function parseOffer(value: unknown): SignedOffer {
   if (!verifyQuote(offer.deposit, encodeQuote(offer.deposit, offer.quote), offer.signature)) throw new Error('Invalid maker signature');
   return offer;
 }
-export interface MarketRequest { assetId: string; giveAmount: string }
+export type Direction = 'token-to-btc' | 'btc-to-token';
+export function parseDirection(value: unknown): Direction {
+  if (value === undefined || value === 'token-to-btc') return 'token-to-btc';
+  if (value === 'btc-to-token') return value;
+  throw new Error('Invalid swap direction');
+}
+export interface MarketRequest { assetId: string; giveAmount: string; direction?: Direction }
 export function parseMarketRequest(value: unknown): MarketRequest {
   const r = object(value);
-  return { assetId: assetId(r.assetId), giveAmount: decimal(r.giveAmount, 'giveAmount', true).toString() };
+  return { assetId: assetId(r.assetId), giveAmount: decimal(r.giveAmount, 'giveAmount', true).toString(),
+    ...(r.direction === undefined ? {} : { direction: parseDirection(r.direction) }) };
 }
 export interface QuoteRequest extends MarketRequest { takerPublicKey: string; takerPayoutScript: string }
 export function parseQuoteRequest(value: unknown): QuoteRequest {
@@ -74,7 +83,8 @@ export function parseQuoteRequest(value: unknown): QuoteRequest {
 export interface QuoteResponse { quoteId: string; offer: ReturnType<typeof offerJSON>; fundingAddress: string }
 export const nowSeconds = () => BigInt(Math.floor(Date.now() / 1000));
 export function validateOfferFor(o: SignedOffer, request: MarketRequest, checkExpiry = true): void {
-  if (hex(o.deposit.wantAsset) !== request.assetId || o.quote.y !== BigInt(request.giveAmount))
+  if (parseDirection(o.deposit.direction) !== parseDirection(request.direction) ||
+      hex(o.deposit.wantAsset) !== request.assetId || o.quote.y !== BigInt(request.giveAmount))
     throw new Error('Maker quote does not match the requested trade');
   if (checkExpiry && o.quote.deadline <= nowSeconds()) throw new Error('Quote expired');
 }

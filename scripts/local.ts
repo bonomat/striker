@@ -86,6 +86,24 @@ async function setup() {
         '--rate-numerator', '5', '--rate-denominator', '1']);
     }
     writeJSON(local.taker.file, { ...local.taker.config, assetId });
+    const reverseFile = path.join(local.maker.directory, 'reverse-deposit.json');
+    if (!existsSync(reverseFile)) {
+      const tokens = 2000n;
+      const held = BigInt((await maker.wallet.getBalance()).availableAssets.find(a => a.assetId === assetId)?.amount ?? 0);
+      if (held < tokens) {
+        await taker.wallet.send({ address: maker.address, amount: 330, assets: [{ assetId, amount: tokens - held }] });
+        await waitFor(async () => BigInt((await maker.wallet.getBalance()).availableAssets.find(a => a.assetId === assetId)?.amount ?? 0) >= tokens ? true : undefined, 'maker token liquidity');
+      }
+      await run('maker', ['deposit', '--direction', 'btc-to-token', '--asset-id', assetId,
+        '--tokens', tokens.toString(), '--sats', '660', '--rate-numerator', '5', '--rate-denominator', '1']);
+    } else {
+      const saved = object(readJSON(reverseFile)), deposit = parseDeposit(saved.deposit);
+      if (deposit.direction !== 'btc-to-token' || hex(deposit.wantAsset) !== assetId ||
+          hex(deposit.makerPublicKey) !== hex(maker.publicKey) ||
+          saved.serverPublicKey !== hex(chain.server) || saved.emulatorPublicKey !== hex(chain.emulatorKey) ||
+          (await coinsAt(chain, makerContract(chain, { deposit }).tree)).length !== 1)
+        throw new Error('Saved reverse deposit is unavailable or belongs to different infrastructure');
+    }
     console.log(JSON.stringify({ ready: true, network, makerAddress: maker.address, takerAddress: taker.address,
       assetId, configDirs: [local.striker.directory, local.maker.directory, local.taker.directory] }, null, 2));
     const profileArg = emulatorMode(network) === 'local' ? ' local' : '';

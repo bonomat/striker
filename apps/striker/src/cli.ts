@@ -33,7 +33,7 @@ main(async () => {
         // Maker endpoints are operator configuration. Takers cannot supply URLs.
         const results = await Promise.allSettled(makers.map(async url => {
           const offer = parseOffer(await requestJSON(`${url}/v1/quotes`,
-            { assetId: request.assetId, giveAmount: request.giveAmount }));
+            { assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }));
           validateOfferFor(offer, request);
           await liveMaker(chain, offer);
           return offer;
@@ -45,7 +45,8 @@ main(async () => {
         for (const [id, order] of orders) if (order.offer.quote.deadline <= nowSeconds() && order.status === 'quoted') orders.delete(id);
         if (orders.size >= 1000) throw new HttpError(503, 'Order capacity reached; restart clears this PoC store');
         const user = takerContract(chain, bytes(request.takerPublicKey, 32, 'takerPublicKey'),
-          p2tr(request.takerPayoutScript, 'takerPayoutScript'), offer.quote.x);
+          p2tr(request.takerPayoutScript, 'takerPayoutScript'), offer.quote.x,
+          offer.deposit.direction === 'btc-to-token' ? offer.deposit.wantAsset : undefined);
         const quoteId = randomUUID();
         orders.set(quoteId, { offer, request, status: 'quoted' });
         // No maker transport address crosses the taker API.
@@ -71,10 +72,13 @@ main(async () => {
       try {
         const maker = await liveMaker(chain, order.offer);
         const payout = p2tr(order.request.takerPayoutScript, 'takerPayoutScript');
-        const user = takerContract(chain, bytes(order.request.takerPublicKey, 32, 'takerPublicKey'), payout, order.offer.quote.x);
+        const reverse = order.offer.deposit.direction === 'btc-to-token';
+        const user = takerContract(chain, bytes(order.request.takerPublicKey, 32, 'takerPublicKey'), payout, order.offer.quote.x,
+          reverse ? order.offer.deposit.wantAsset : undefined);
         const userCoin = await fundedCoin(chain, user.tree, fundingTxid, fundingVout);
-        if (userCoin.assets?.length !== 1 || userCoin.assets[0]?.assetId !== order.request.assetId ||
-          BigInt(userCoin.assets[0].amount) !== order.offer.quote.y) throw new Error('Funding asset or amount does not match quote');
+        if (reverse ? (userCoin.assets?.length || BigInt(userCoin.value) !== order.offer.quote.y + 330n) :
+            (userCoin.assets?.length !== 1 || userCoin.assets[0]?.assetId !== order.request.assetId ||
+             BigInt(userCoin.assets[0].amount) !== order.offer.quote.y)) throw new Error('Funding asset or amount does not match quote');
         validateOfferFor(order.offer, order.request);
         const result = await settle(chain, { ...order.offer, makerCoin: maker.coin, userCoin,
           makerTree: maker.tree, userTree: user.tree, makerScript: maker.script, userScript: user.script,

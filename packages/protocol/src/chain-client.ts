@@ -3,7 +3,7 @@ import { ArkAddress, CSVMultisigTapscript, EsploraProvider, Extension, InMemoryC
   SingleKey, Transaction, Wallet, attachPrevArkTxs, type VtxoScript } from '@arkade-os/sdk';
 import { encodeBase64, decodeBase64 } from './encoding.js';
 import { schnorr } from '@noble/curves/secp256k1.js';
-import { EPOCH_PACKET, bancoUserCovenant, covenantTree, makerCovenant } from './covenant.js';
+import { EPOCH_PACKET, bancoUserCovenant, tokenUserCovenant, covenantTree, makerCovenant } from './covenant.js';
 import { buildSettlement, type Coin, type Settlement } from './settlement.js';
 import { bytes, hex, type SignedOffer } from './wire.js';
 
@@ -71,8 +71,8 @@ export function makerContract(chain: Chain, offer: Pick<SignedOffer, 'deposit'>)
   const script = makerCovenant(offer.deposit);
   return { script, tree: covenantTree(script, offer.deposit.makerPublicKey, chain.server, chain.emulatorKey) };
 }
-export function takerContract(chain: Chain, owner: Uint8Array, payoutScript: Uint8Array, minimum: bigint) {
-  const script = bancoUserCovenant(payoutScript, minimum);
+export function takerContract(chain: Chain, owner: Uint8Array, payoutScript: Uint8Array, minimum: bigint, receiveToken?: Uint8Array) {
+  const script = receiveToken ? tokenUserCovenant(payoutScript, minimum, receiveToken) : bancoUserCovenant(payoutScript, minimum);
   const tree = covenantTree(script, owner, chain.server, chain.emulatorKey);
   return { script, tree, address: tree.address('tark', chain.server).encode() };
 }
@@ -82,7 +82,11 @@ export async function liveMaker(chain: Chain, offer: SignedOffer) {
   if (coins.length !== 1) throw new Error('Maker must have exactly one live deposit tip');
   const coin = coins[0]!;
   if (await epochOf(chain, coin) !== offer.quote.epoch) throw new Error('Maker quote was cancelled');
-  if (BigInt(coin.value) - offer.quote.x < 330n) throw new Error('Insufficient maker liquidity');
+  if (offer.deposit.direction === 'btc-to-token') {
+    const token = coin.assets?.find(a => a.assetId === hex(offer.deposit.wantAsset));
+    if (coin.assets?.length !== 1 || !token || BigInt(token.amount) <= offer.quote.x)
+      throw new Error('Insufficient maker token liquidity');
+  } else if (BigInt(coin.value) - offer.quote.x < 330n) throw new Error('Insufficient maker liquidity');
   return { ...contract, coin };
 }
 export async function settle(chain: Chain, terms: Settlement) {

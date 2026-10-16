@@ -7,7 +7,7 @@ import { schnorr } from '@noble/curves/secp256k1.js';
 import { args, assetId, connectChain, createWallet, decimal, depositJSON, epochOf, epochPacket,
   fundedCoin, hex, HttpError, listen, main, makerContract, nowSeconds, object, offerJSON,
   parseDeposit, parseMarketRequest, port, readJSON, required, secretKey, signQuote, writeJSON,
-  coinsAt, loadConfig, type Chain, type Deposit } from '@satora/striker-protocol';
+  coinsAt, loadConfig, parseDirection, type Chain, type Deposit } from '@satora/striker-protocol';
 
 const HELP = `maker init | address | balance [--state FILE]
 maker deposit --asset-id HEX --sats SATS --rate-numerator N --rate-denominator D [--state FILE]
@@ -29,7 +29,7 @@ function loadState(file: string, chain: Chain, key: Uint8Array) {
 }
 
 main(async () => {
-  const parsed = args(['asset-id', 'sats', 'rate-numerator', 'rate-denominator', 'state', 'host', 'port', 'ttl-seconds']);
+  const parsed = args(['asset-id', 'sats', 'tokens', 'direction', 'reverse-state', 'rate-numerator', 'rate-denominator', 'state', 'host', 'port', 'ttl-seconds']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
   if (!['init', 'address', 'balance', 'deposit', 'serve'].includes(command)) throw new Error(HELP);
@@ -39,24 +39,32 @@ main(async () => {
     console.log(JSON.stringify({ configDir: local.directory, publicKey: hex(schnorr.getPublicKey(key)) }));
     return;
   }
-  const stateFile = typeof flags.state === 'string' ? flags.state : path.join(local.directory, 'deposit.json');
+  const direction = parseDirection(flags.direction);
+  const stateFile = typeof flags.state === 'string' ? flags.state : path.join(local.directory, direction === 'btc-to-token' ? 'reverse-deposit.json' : 'deposit.json');
   const chain = await connectChain();
   if (command === 'serve') {
-    const state = loadState(stateFile, chain, key);
+    const reverseFile = typeof flags['reverse-state'] === 'string' ? flags['reverse-state'] : path.join(local.directory, 'reverse-deposit.json');
+    const states = [...new Set([stateFile, reverseFile])].filter(existsSync).map(file => loadState(file, chain, key));
+    if (!states.length) throw new Error('Create maker liquidity before serving');
     const ttl = Number(flags['ttl-seconds'] ?? local.config.ttlSeconds);
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 300) throw new Error('TTL must be 1..300 seconds');
-    const { tree } = makerContract(chain, state);
     await listen('maker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4101),
       async (method, path, body) => {
         if (method === 'GET' && path === '/health') return { service: 'maker', ok: true };
         if (method !== 'POST' || path !== '/v1/quotes') throw new HttpError(404, 'Not found');
         const request = parseMarketRequest(body);
+        const state = states.find(s => parseDirection(s.deposit.direction) === parseDirection(request.direction) && hex(s.deposit.wantAsset) === request.assetId);
+        if (!state) throw new HttpError(422, 'Unsupported asset or swap direction');
+        const { tree } = makerContract(chain, state);
         if (request.assetId !== hex(state.deposit.wantAsset)) throw new HttpError(422, 'Unsupported asset');
         const coins = await coinsAt(chain, tree);
         if (coins.length !== 1) throw new HttpError(503, 'No unambiguous live deposit');
         const coin = coins[0]!;
-        const y = BigInt(request.giveAmount), x = y * state.numerator / state.denominator;
-        if (x < 330n || BigInt(coin.value) - x < 330n) throw new HttpError(422, 'Trade outside available liquidity');
+        const y = BigInt(request.giveAmount), reverse = state.deposit.direction === 'btc-to-token';
+        const x = reverse ? y * state.denominator / state.numerator : y * state.numerator / state.denominator;
+        const held = BigInt(coin.assets?.find(a => a.assetId === request.assetId)?.amount ?? 0);
+        if (reverse ? (y < 330n || x <= 0n || held <= x || coin.assets?.length !== 1) :
+            (x < 330n || BigInt(coin.value) - x < 330n)) throw new HttpError(422, 'Trade outside available liquidity');
         const quote = { x, y, epoch: await epochOf(chain, coin), deadline: nowSeconds() + BigInt(ttl) };
         return offerJSON({ deposit: state.deposit, quote, signature: signQuote(state.deposit, quote, key) });
       });
@@ -86,11 +94,14 @@ main(async () => {
     const numerator = decimal(flags['rate-numerator'], '--rate-numerator', true);
     const denominator = decimal(flags['rate-denominator'], '--rate-denominator', true);
     const deposit: Deposit = { lineage: randomBytes(32), makerPublicKey: actor.publicKey,
+      ...(direction === 'btc-to-token' ? { direction } : {}),
       wantAsset: asset.AssetId.fromString(wanted).serialize(), payoutScript: actor.payoutScript };
     const { tree } = makerContract(chain, { deposit });
     const address = tree.address('tark', chain.server).encode();
     const packet = epochPacket(0n);
-    const txid = await actor.wallet.send({ address, amount: Number(sats), extensions: [{ type: packet.type(), payload: packet.serialize() }] });
+    const txid = await actor.wallet.send({ address, amount: Number(sats),
+      ...(direction === 'btc-to-token' ? { assets: [{ assetId: wanted, amount: decimal(flags.tokens, '--tokens', true) }] } : {}),
+      extensions: [{ type: packet.type(), payload: packet.serialize() }] });
     const coin = await fundedCoin(chain, tree, txid);
     writeJSON(file, { version: 1, network: chain.settings.network, deposit: depositJSON(deposit),
       serverPublicKey: hex(chain.server), emulatorPublicKey: hex(chain.emulatorKey),
