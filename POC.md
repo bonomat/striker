@@ -435,9 +435,67 @@ To configure a genuine USDt market, set `WEB_ASSET_ID`, `WEB_ASSET_SYMBOL=USDt`,
 metadata, and fund/configure maker pools for that exact asset ID. A ticker alone
 is not an asset identity. Demo setup mints POC, never genuine USDt. Build with the
 same public settings: `npm run build --workspace @satora/web`. Deployment must
-serve the generated `config.json` plus the fixed `/api/striker`, `/api/ark`,
-`/api/esplora` and read-only `/api/emulator/v1/info` proxies over HTTPS; a static
-HTML host alone is insufficient. This remains a test-network PoC wallet.
+serve the generated `config.json`. By default the UI uses the fixed `/api/striker`,
+`/api/ark`, `/api/esplora` and read-only `/api/emulator/v1/info` proxies. Static
+hosting uses direct public endpoints instead, as described below. This remains
+a test-network PoC wallet.
+
+## GitHub Pages deployment
+
+`.github/workflows/pages.yml` builds/tests on pushes to `main` and supports manual
+dispatch. It uploads only `apps/web/dist`, then deploys through the `github-pages`
+environment using GitHub's official Pages actions. No wallets, local configuration,
+private keys or service state are uploaded. The workflow derives the base path
+from Pages metadata, supporting both `/striker/` project sites and custom domains.
+
+In the target repository:
+
+1. Select **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+2. Under **Settings → Secrets and variables → Actions → Variables**, configure:
+
+   | Variable | Value |
+   |---|---|
+   | `WEB_STRIKER_URL` | Required: public HTTPS Striker endpoint, e.g. `https://striker.example.com` |
+   | `WEB_ASSET_ID` | Required: exact 68-character asset ID supported by the maker pools |
+   | `WEB_ASSET_SYMBOL` | Optional; default `POC` |
+   | `WEB_ASSET_NAME` | Optional; default `Striker test asset` |
+   | `WEB_ASSET_DECIMALS` | Optional; default `0` |
+   | `ARK_URL` | Optional; default `https://mutinynet.arkade.sh` |
+   | `ESPLORA_URL` | Optional; default `https://mempool.mutinynet.arkade.sh/api` |
+   | `EMULATOR_URL` | Optional; default hosted Mutinynet Emulator |
+   | `EMULATOR_PUBKEY` | Required for a custom Emulator URL: its pinned 32-byte x-only public key, 64 lowercase hex characters |
+
+3. Run Striker behind HTTPS with `STRIKER_ALLOWED_ORIGINS=https://bonomat.github.io`
+   (or the actual Pages/custom-domain origin, without a path or trailing slash).
+   Comma-separated origins are supported. Restart Striker after setting this value.
+4. Push to `main` or run **Deploy web interface to GitHub Pages** from Actions.
+
+The workflow intentionally fails if the required asset or Striker URL is missing.
+These variables are public and emitted in `config.json`; never put private keys
+or API credentials in them. Pages hosts the frontend only: maker, Striker and the
+Emulator still run separately. Browsers must be able to reach the configured HTTPS
+endpoints, with CORS enabled for the Pages origin, including Arkade SSE subscriptions.
+The browser never calls the maker or the Emulator signing endpoint.
+
+For the local Mutinynet Emulator profile, expose only its read-only `GET /v1/info`
+through an HTTPS endpoint and set both `EMULATOR_URL` and `EMULATOR_PUBKEY` to match
+the signer used by Striker and the maker deposits. The hosted Emulator default
+uses a different signer and cannot spend a local-Emulator deposit. No local
+`.emulator/public.json` is needed in CI; the workflow uses explicit public settings.
+
+To reproduce a static project build locally:
+
+```sh
+STRIKER_NETWORK=mutinynet STRIKER_EMULATOR=hosted \
+WEB_STATIC=true WEB_BASE_PATH=/striker/ \
+WEB_STRIKER_URL=https://striker.example.com WEB_ASSET_ID=YOUR_68_CHARACTER_ASSET_ID \
+npm run build --workspace @satora/web
+```
+
+Run `npm ci` and `npm run build` first in a fresh checkout to build the shared
+workspace packages. The HTTPS endpoint in the example is a placeholder; provision
+your backend separately before deploying. Existing `just web` development keeps
+using the local proxies.
 
 ## Wire format and Rust port
 

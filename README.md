@@ -24,6 +24,10 @@ encrypted browser wallet, live quotes, activity and refunds. Rerun setup and res
 older services to provision/load the token pool for BTC → POC. `just --list` shows
 the other commands.
 
+The [GitHub Pages workflow](./.github/workflows/pages.yml) deploys the frontend on
+pushes to `main`. See [Pages configuration](./POC.md#github-pages-deployment) for
+the required public backend URL, asset ID and CORS setup.
+
 ---
 
 ## The idea in one breath

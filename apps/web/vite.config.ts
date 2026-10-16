@@ -25,13 +25,32 @@ const configured = process.env.WEB_ASSET_ID ?? taker.config.assetId;
 const staticSite = process.env.WEB_STATIC === "true";
 const strikerUrl = process.env.WEB_STRIKER_URL;
 if (staticSite) {
-  if (!strikerUrl) throw new Error("WEB_STRIKER_URL is required for static hosting");
-  if (!configured) throw new Error("WEB_ASSET_ID is required for static hosting");
-  for (const [name, value] of Object.entries({ WEB_STRIKER_URL: strikerUrl, ARK_URL: settings.arkUrl, EMULATOR_URL: settings.emulatorUrl, ESPLORA_URL: settings.esploraUrl })) {
+  if (!strikerUrl)
+    throw new Error("WEB_STRIKER_URL is required for static hosting");
+  if (!configured)
+    throw new Error("WEB_ASSET_ID is required for static hosting");
+  for (const [name, value] of Object.entries({
+    WEB_STRIKER_URL: strikerUrl,
+    ARK_URL: settings.arkUrl,
+    EMULATOR_URL: settings.emulatorUrl,
+    ESPLORA_URL: settings.esploraUrl,
+  })) {
     const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
-      throw new Error(`${name} must be a public HTTPS URL without credentials, query or fragment`);
-    if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]")
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
+      throw new Error(
+        `${name} must be a public HTTPS URL without credentials, query or fragment`,
+      );
+    if (
+      url.hostname === "localhost" ||
+      url.hostname === "127.0.0.1" ||
+      url.hostname === "[::1]"
+    )
       throw new Error(`${name} cannot be a loopback endpoint on a static site`);
   }
 }
@@ -63,7 +82,8 @@ const publicConfig = (): Plugin => {
         res.end("Not found");
         return;
       }
-      if (req.url?.split("?")[0] !== `${server.config.base}config.json`) return next();
+      if (req.url?.split("?")[0] !== `${server.config.base}config.json`)
+        return next();
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store");
       res.end(json);

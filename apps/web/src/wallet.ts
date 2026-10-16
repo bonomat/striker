@@ -56,11 +56,13 @@ export async function connectWallet(
     publicHex = hex(publicKey);
   const chain = await connectChainWithSettings({
     ...config,
-    ...(config.strikerUrl ? {} : {
-      arkUrl: `${location.origin}/api/ark`,
-      emulatorUrl: `${location.origin}/api/emulator`,
-      esploraUrl: `${location.origin}/api/esplora`,
-    }),
+    ...(config.strikerUrl
+      ? {}
+      : {
+          arkUrl: `${location.origin}/api/ark`,
+          emulatorUrl: `${location.origin}/api/emulator`,
+          esploraUrl: `${location.origin}/api/esplora`,
+        }),
   });
   const identity = SingleKey.fromPrivateKey(key);
   const database = `striker-${config.network}-${publicHex}`;
