@@ -7,6 +7,34 @@ export interface Vault {
   iv: string;
   ciphertext: string;
 }
+export interface RecoveryBackup {
+  version: 1;
+  type: "striker-recovery";
+  privateKey: string;
+  publicKey: string;
+}
+export function createRecoveryBackup(privateKey: string): RecoveryBackup {
+  const secret = bytes(privateKey.trim(), 32, "private key");
+  try {
+    return {
+      version: 1,
+      type: "striker-recovery",
+      privateKey: hex(secret),
+      publicKey: hex(schnorr.getPublicKey(secret)),
+    };
+  } catch {
+    throw new Error("Invalid private key");
+  }
+}
+export function parseRecoveryBackup(value: unknown): RecoveryBackup {
+  const record = object(value);
+  if (record.version !== 1 || record.type !== "striker-recovery")
+    throw new Error("Unsupported recovery backup");
+  const backup = createRecoveryBackup(String(record.privateKey ?? ""));
+  if (backup.publicKey !== record.publicKey)
+    throw new Error("Recovery backup public key mismatch");
+  return backup;
+}
 const encoder = new TextEncoder();
 async function encryptionKey(password: string, salt: Uint8Array) {
   if (password.length < 1 || password.length > 256)

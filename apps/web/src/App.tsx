@@ -19,6 +19,8 @@ import {
   encryptWallet,
   parseVault,
   recoverWallet,
+  createRecoveryBackup,
+  parseRecoveryBackup,
   type Vault,
 } from "./vault.js";
 import "./style.css";
@@ -414,7 +416,19 @@ export default function App() {
     try {
       if (file.size > 4096)
         throw new Error("This is not a Striker wallet backup.");
-      const encrypted = parseVault(JSON.parse(await file.text()));
+      const data = JSON.parse(await file.text());
+      if (data?.type === "striker-recovery") {
+        const recovered = parseRecoveryBackup(data);
+        if (vault && recovered.publicKey !== vault.publicKey)
+          throw new Error(
+            "This recovery key belongs to another wallet. Delete the saved wallet first to switch wallets.",
+          );
+        resetWalletForm(vault ? "recover" : "none");
+        setWalletMode("import");
+        setImportKey(recovered.privateKey);
+        return;
+      }
+      const encrypted = parseVault(data);
       if (vault && encrypted.publicKey !== vault.publicKey)
         throw new Error(
           "This backup belongs to another wallet. Delete the saved wallet first to switch wallets.",
@@ -437,6 +451,20 @@ export default function App() {
     const link = document.createElement("a");
     link.href = url;
     link.download = `striker-wallet-${vault.publicKey.slice(0, 8)}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function downloadRecoveryKey() {
+    if (!account) return;
+    const recovered = createRecoveryBackup(account.identity.toHex());
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(recovered, null, 2)], {
+        type: "application/json",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `striker-recovery-${recovered.publicKey.slice(0, 8)}.json`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -960,15 +988,19 @@ export default function App() {
                 {copied ? <Check /> : <Copy />}
                 {copied ? "Address copied" : "Copy address"}
               </button>
-              <button className="secondary-button" onClick={backup}>
+              <button
+                className="secondary-button"
+                onClick={downloadRecoveryKey}
+              >
                 <Icon>
                   <path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4" />
                 </Icon>
-                Download encrypted backup
+                Download recovery key
               </button>
               <p className="small-print">
-                Keep your backup and password. Both are needed to restore your
-                wallet.
+                Contains your unencrypted private key. Anyone with this file can
+                spend your funds. Keep it safe; recovery does not need your old
+                password.
               </p>
               <button
                 className="text-button lock-wallet"
@@ -1180,19 +1212,17 @@ export default function App() {
                   Cancel backup restore
                 </button>
               )}
-              {(
-                <label className="backup-import">
-                  Have a Striker backup? <span>Restore backup</span>
-                  <input
-                    type="file"
-                    disabled={walletBusy}
-                    accept="application/json,.json"
-                    onChange={(event) =>
-                      void importBackup(event.target.files?.[0])
-                    }
-                  />
-                </label>
-              )}
+              <label className="backup-import">
+                Have a Striker backup? <span>Restore backup</span>
+                <input
+                  type="file"
+                  disabled={walletBusy}
+                  accept="application/json,.json"
+                  onChange={(event) =>
+                    void importBackup(event.target.files?.[0])
+                  }
+                />
+              </label>
               <div className="privacy-note">
                 <Icon size={17}>
                   <path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7z" />

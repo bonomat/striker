@@ -392,13 +392,25 @@ For local regtest, use `just setup`, `just start`, and `just web`. The browser
 wallet is separate from the CLI wallet: create one and fund its Receive address,
 or explicitly import an existing Arkade private key through the wallet dialog.
 The server never reads or serves `.taker/private-key`. Browser keys are encrypted
-with the chosen password in local storage; download the encrypted backup and keep
-the password. Passwords accept 1–256 characters. Wallet state uses IndexedDB;
+with the chosen password in local storage. While unlocked, **Download recovery key**
+saves an unencrypted JSON file containing the private key and public identity.
+Anyone with this file can spend the wallet's funds; store it securely. **Restore
+backup** accepts that file and prompts for a new password, without needing the
+old password. These single-key wallets do not have a seed phrase.
+
+The locked **Welcome back** screen also offers private-key recovery and confirmed
+deletion (type `DELETE`). Recovery preserves the wallet identity and swap history;
+keys for a different wallet are rejected. Deletion removes the local encrypted key
+without moving funds or cancelling swaps, and retains existing swap records for
+later recovery with the same key. The encrypted copy can still be downloaded from
+the deletion screen, but it requires its original password. Encrypted backup imports
+only replace the saved key after successful decryption. Passwords accept 1–256
+characters. Wallet state uses IndexedDB;
 swap progress is stored locally before funding/execution and survives reloads.
 After an interruption, Activity can check status, resume a known funded swap,
 or return unspent funds through the owner leaf. An uncertain funding outcome
 blocks a second payment and requires wallet/chain inspection. Do not clear browser
-storage while an offer is funded: encrypted key backups do not include swap records.
+storage while an offer is funded: wallet key backups do not include swap records.
 
 `packages/taker-sdk` exports `TakerClient`, `SavedSwap`, `SwapStore`, `parseAmount`
 and `formatAmount`. Both the CLI and UI use it. The SDK accepts an Arkade wallet,
