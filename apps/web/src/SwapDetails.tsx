@@ -46,13 +46,15 @@ function Identifier({ label, value, href }: { label: string; value: string; href
 }
 
 export function SwapDetails({
-  quoteId, fundingTxid, fundingVout, settlementTxid, refundTxid, network,
+  quoteId, fundingTxid, fundingVout, settlementTxid, refundTxid, cancellationTxid, depositInputs, network,
 }: {
   quoteId: string;
   fundingTxid?: string;
   fundingVout?: string;
   settlementTxid?: string;
   refundTxid?: string;
+  cancellationTxid?: string;
+  depositInputs?: { coin: { txid: string; vout: number } }[];
   network: AppConfig["network"];
 }) {
   const explorerLink = (txid: string) =>
@@ -61,6 +63,8 @@ export function SwapDetails({
   return (
     <dl className="swap-identifiers" aria-label="Swap identifiers">
       <Identifier label="Quote ID" value={quoteId} key={quoteId} />
+      {depositInputs?.map((input, i) => <Identifier label={`Deposit ${i + 1} transaction ID (output ${input.coin.vout})`}
+        value={input.coin.txid} href={explorerLink(input.coin.txid)} key={`deposit:${input.coin.txid}:${input.coin.vout}`} />)}
       {fundingTxid && <Identifier label="Funding transaction ID" value={fundingTxid}
         href={explorerLink(fundingTxid)} key={`funding:${fundingTxid}`} />}
       {fundingVout !== undefined && (
@@ -68,6 +72,8 @@ export function SwapDetails({
       )}
       {settlementTxid && <Identifier label="Settlement transaction ID" value={settlementTxid}
         href={explorerLink(settlementTxid)} key={`settlement:${settlementTxid}`} />}
+      {cancellationTxid && <Identifier label="Cancellation transaction ID" value={cancellationTxid}
+        href={explorerLink(cancellationTxid)} key={`cancel:${cancellationTxid}`} />}
       {refundTxid && <Identifier label="Refund transaction ID" value={refundTxid}
         href={explorerLink(refundTxid)} key={`refund:${refundTxid}`} />}
     </dl>

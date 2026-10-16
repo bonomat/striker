@@ -5,7 +5,7 @@
 The experimental **TypeScript PoC** has three runnable projects: `apps/striker`,
 `apps/maker`, and `apps/taker`. All maker–taker swap communication passes through
 Striker. Shared covenants and wire formats live in `packages/protocol`, alongside
-portable quote vectors and Arkade regtest tests. See **[POC.md](./POC.md)** for
+portable quote/intent vectors and Arkade regtest tests. See **[POC.md](./POC.md)** for
 commands, scope, and the Rust port plan. The feature list below describes the
 protocol design, not completed PoC functionality.
 
@@ -22,7 +22,9 @@ while settling on Mutinynet. Run `just web mutinynet local` for the browser inte
 at `http://127.0.0.1:5173`. It swaps BTC ↔ POC through the shared taker SDK, with an
 encrypted browser wallet, live quotes, activity and refunds. Rerun setup and restart
 older services to provision/load the token pool for BTC → POC. `just --list` shows
-the other commands.
+the other commands. Existing CLI funds at the previous address need an explicit
+`npm run taker -- move-legacy` before swapping; browser wallets offer the same migration
+in the wallet dialog. New receive addresses deposit directly into the reusable taker covenant.
 
 The [GitHub Pages workflow](./.github/workflows/pages.yml) deploys the frontend on
 pushes to `main`. See [Pages configuration](./POC.md#github-pages-deployment) for
@@ -33,8 +35,8 @@ the required public backend URL, asset ID and CORS setup.
 ## The idea in one breath
 
 A maker deposits liquidity once into a covenant and signs quotes off-chain. A user asks Striker for
-a price; Striker polls the makers; the best signed quote comes back. The user locks their funds in a
-covenant that guarantees they receive at least the quoted amount, and an atomic transaction settles
+a price; Striker polls the makers; the best signed quote comes back. Deposits already reside in the
+user’s reusable covenant. The user signs an intent, and an atomic transaction settles
 the swap. The maker never has to be online to be filled, and Striker never custodies a satoshi.
 
 It's [NEAR Intents](https://docs.near-intents.org), rebuilt on Bitcoin: the quote lives in a signed
@@ -57,14 +59,14 @@ The fix is to move the quote off-chain and make the covenant generic.
 ## How it works
 
 ```
-0. Maker deposits funds into a recursive covenant (once).
+0. Maker and taker receive deposits into their respective reusable covenants.
 1. User wants to sell 100 BTC for USDT.
 2. User asks Striker for a quote.
 3. Striker polls all makers.
 4. Each maker returns a SIGNED MESSAGE authorizing "take X of my USDT if Y BTC goes to my address".
 5. Striker returns the best quote to the user.
-6. User locks 100 BTC in a covenant that enforces "I receive at least the quoted USDT".
-   → One atomic tx spends both covenants and settles the swap.
+6. User signs input authorizations enforcing the payment, receipt and change.
+7. Striker follows current maker liquidity and settles both covenants in one Arkade transaction.
 ```
 
 The key inversion: **the quote is encoded in the redeem data of the spend, not in the covenant
@@ -90,7 +92,7 @@ graph LR
   R -->|2. poll| M
   M -->|3. signed quote M| R
   R -->|4. best quote| U
-  U -->|5. lock funds in user covenant| TX
+  U -->|5. signed taker input intents| TX
   R --> TX
   TX -->|6. validate| E
   E -->|signatures| TX

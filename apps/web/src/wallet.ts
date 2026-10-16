@@ -6,12 +6,13 @@ import {
   SingleKey,
   Wallet,
 } from "@arkade-os/sdk";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import {
   connectChainWithSettings,
   hex,
 } from "@satora/striker-protocol/browser";
-import { TakerClient, type SavedSwap, type SwapStore } from "@satora/taker-sdk";
+import { CovenantWallet, TakerClient, type SavedSwap, type SwapStore } from "@satora/taker-sdk";
 import type { AppConfig } from "./config.js";
 
 export const vaultStorageKey = "striker.wallet.v1";
@@ -63,7 +64,7 @@ export async function connectWallet(
           emulatorUrl: `${location.origin}/api/emulator`,
           esploraUrl: `${location.origin}/api/esplora`,
         }),
-  });
+  }, { checkEmulator: false });
   const identity = SingleKey.fromPrivateKey(key);
   const database = `striker-${config.network}-${publicHex}`;
   const wallet = await Wallet.create({
@@ -81,7 +82,9 @@ export async function connectWallet(
     },
     settlementConfig: false,
   });
-  const address = await wallet.getAddress();
+  const legacyAddress = await wallet.getAddress();
+  const covenant = new CovenantWallet(chain, publicKey, identity, wallet);
+  const address = covenant.contract.address;
   const store = new BrowserSwapStore(
     `striker.swaps:${config.network}:${chain.server.toString()}:${publicHex}`,
     changed,
@@ -92,12 +95,14 @@ export async function connectWallet(
       wallet,
       identity,
       publicKey,
-      payoutScript: ArkAddress.decode(address).pkScript,
+      payoutScript: covenant.contract.tree.pkScript,
+      legacyPayoutScript: ArkAddress.decode(legacyAddress).pkScript,
+      signIntent: async message => schnorr.sign(sha256(message), key),
     },
     strikerUrl: config.strikerUrl ?? `${location.origin}/api/striker`,
     store,
   });
-  return { wallet, identity, address, publicHex, client, store };
+  return { wallet, identity, address, legacyAddress, covenant, publicHex, client, store };
 }
 export type ConnectedWallet = Awaited<ReturnType<typeof connectWallet>>;
 export async function withWalletLock<T>(

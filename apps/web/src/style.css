@@ -1671,3 +1671,8 @@ button svg {
     margin-bottom: 16px;
   }
 }
+
+.wallet-withdrawal { margin: 20px 0; color: #7b886b; font-size: 12px; }
+.wallet-withdrawal summary { cursor: pointer; }
+.wallet-withdrawal input { box-sizing: border-box; width: 100%; margin-bottom: 12px; padding: 12px; border: 1px solid #dce5d1; border-radius: 10px; background: #fcfdf9; font: inherit; }
+.legacy-wallet-funds { margin-bottom: 20px; padding: 14px; border: 1px solid #dce5d1; border-radius: 12px; }

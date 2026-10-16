@@ -1,3 +1,5 @@
+import { CovenantWallet } from "./covenant-wallet.js";
+export { CovenantWallet } from "./covenant-wallet.js";
 import {
   asset,
   buildOffchainTx,
@@ -8,6 +10,8 @@ import {
 } from "@arkade-os/sdk";
 import {
   bytes,
+  coinsAt, checkEmulator, reusableTakerContract, termsForInput, encodeIntent, MAX_INTENT_INPUTS,
+  type SignedTakerInput,
   decimal,
   encodeBase64,
   decodeBase64,
@@ -43,6 +47,9 @@ export interface SavedSwap {
   request: QuoteRequest;
   response: QuoteResponse;
   createdAt?: number;
+  intentInputs?: SignedTakerInput[];
+  intentSubmittedAt?: number;
+  cancellation?: { txid: string; arkTx: string; checkpoints: string[] };
   fundingStartedAt?: number;
   funding?: { fundingTxid: string; fundingVout?: string };
   result?: SwapResult;
@@ -62,7 +69,9 @@ export interface TakerOptions {
     wallet: Pick<IWallet, "send">;
     publicKey: Uint8Array;
     payoutScript: Uint8Array;
+    legacyPayoutScript?: Uint8Array;
     identity?: Pick<Identity, "sign">;
+    signIntent?: (message: Uint8Array) => Promise<Uint8Array>;
   };
   strikerUrl: string;
   store: SwapStore;
@@ -100,13 +109,14 @@ export class TakerClient {
     validateOfferFor(offer, request, checkExpiry);
     if (
       request.takerPublicKey !== hex(actor.publicKey) ||
-      request.takerPayoutScript !== hex(actor.payoutScript)
+      request.takerPayoutScript !== hex(response.protocol === "intent-v1" ? actor.payoutScript : actor.legacyPayoutScript ?? actor.payoutScript)
     )
       throw new Error("Quote belongs to another wallet");
-    const contract = takerContract(
+    if (response.protocol !== undefined && response.protocol !== "intent-v1") throw new Error("Unsupported swap protocol");
+    const contract = response.protocol === "intent-v1" ? reusableTakerContract(this.options.chain, actor.publicKey) : takerContract(
       this.options.chain,
       actor.publicKey,
-      actor.payoutScript,
+      actor.legacyPayoutScript ?? actor.payoutScript,
       offer.quote.x,
       offer.deposit.direction === 'btc-to-token' ? offer.deposit.wantAsset : undefined,
     );
@@ -116,6 +126,7 @@ export class TakerClient {
     return { response: response as unknown as QuoteResponse, offer, contract };
   }
   async quote(assetId: string, amount: string, direction: Direction = 'token-to-btc'): Promise<SavedSwap> {
+    if (this.options.actor.signIntent) await checkEmulator(this.options.chain);
     const request = parseQuoteRequest({
       assetId,
       giveAmount: amount,
@@ -125,8 +136,9 @@ export class TakerClient {
     });
     const { response } = this.verify(
       request,
-      await requestJSON(`${this.strikerUrl}/v1/quotes`, request, 15_000),
+      await requestJSON(`${this.strikerUrl}/${this.options.actor.signIntent ? "v2" : "v1"}/quotes`, request, 15_000),
     );
+    if (this.options.actor.signIntent && response.protocol !== "intent-v1") throw new Error("Striker does not support reusable covenant swaps");
     const saved: SavedSwap = {
       version: 1,
       network: this.options.chain.settings.network,
@@ -175,12 +187,14 @@ export class TakerClient {
     return this.exclusive(quoteId, async () => {
       const saved = await this.saved(quoteId);
       if (saved.refund) throw new Error("Refund already requested");
+      if (saved.result?.status === "cancelled") throw new Error("Authorization was cancelled; request a new quote");
       const { response, offer, contract } = this.verify(
         saved.request,
         saved.response,
-        saved.funding === undefined,
+        saved.funding === undefined && !saved.intentInputs && saved.result?.status !== "settled",
       );
       if (saved.result?.status === "settled") return saved.result;
+      if (response.protocol === "intent-v1") return this.executeIntent(saved, offer);
       if (!saved.funding) {
         if (saved.fundingStartedAt)
           throw new Error(
@@ -229,6 +243,71 @@ export class TakerClient {
       saved.result = result as unknown as SwapResult;
       await this.options.store.put(saved);
       return saved.result;
+    });
+  }
+  private async executeIntent(saved: SavedSwap, offer: ReturnType<typeof parseOffer>): Promise<SwapResult> {
+    const { actor, chain, store } = this.options;
+    if (!actor.signIntent) throw new Error("This wallet cannot authorize reusable covenant swaps");
+    if (Number(offer.quote.deadline) * 1000 - Date.now() < MIN_QUOTE_SETTLEMENT_SECONDS * 1000)
+      throw new Error("Quote expired or expires too soon. Request a new quote; your deposits remain in your wallet.");
+    const contract = reusableTakerContract(chain, actor.publicKey);
+    if (saved.request.takerPayoutScript !== hex(contract.tree.pkScript)) throw new Error("Intent receipt must return to your covenant");
+    if (!saved.intentInputs) {
+      const coins = [...await coinsAt(chain, contract.tree)].sort((a, b) => b.value - a.value);
+      const btcToToken = offer.deposit.direction === 'btc-to-token';
+      let sats = btcToToken ? offer.quote.y + 330n : 330n, tokens = btcToToken ? 0n : offer.quote.y;
+      const selected: { coin: typeof coins[number]; sats: bigint; tokens: bigint }[] = [];
+      // Token-bearing deposits first; then add BTC carriers as needed.
+      if (!btcToToken) coins.sort((a, b) => {
+        const held = (c: typeof a) => BigInt(c.assets?.find(v => v.assetId === saved.request.assetId)?.amount ?? 0);
+        return held(a) === held(b) ? 0 : held(a) > held(b) ? -1 : 1;
+      });
+      for (const coin of coins) {
+        if (sats === 0n && tokens === 0n) break;
+        const spare = BigInt(coin.value) - 330n;
+        if (spare < 0n) continue;
+        const held = BigInt(coin.assets?.find(a => a.assetId === saved.request.assetId)?.amount ?? 0);
+        const payTokens = held < tokens ? held : tokens, paySats = spare < sats ? spare : sats;
+        if (payTokens === 0n && paySats === 0n) continue;
+        selected.push({ coin, sats: paySats, tokens: payTokens }); sats -= paySats; tokens -= payTokens;
+      }
+      if (sats || tokens || selected.length > MAX_INTENT_INPUTS)
+        throw new Error("Insufficient covenant balance, or more than four deposits are needed. Each change output needs a 330-sat carrier. Move previous-wallet funds, consolidate deposits, or deposit more BTC.");
+      const batch = selected.map(item => ({ coin: item.coin, paySats: item.sats, payTokens: item.tokens }));
+      const terms = selected.map(({ coin, sats, tokens }) => termsForInput(chain.checkpoint, contract.tree, offer, coin, sats, tokens, batch));
+      const signature = hex(await actor.signIntent(encodeIntent(contract.domain, terms[0]!)));
+      saved.intentInputs = selected.map(({ coin }, i) => ({ coin: { txid: coin.txid, vout: coin.vout }, terms: terms[i]!, signature }));
+      // Persist the exact authorization before the request. Recovery reuses it.
+      await store.put(saved);
+    }
+    saved.intentSubmittedAt ??= Date.now(); await store.put(saved);
+    const result = object(await requestJSON(`${this.strikerUrl}/v2/swaps`, {
+      quoteId: saved.response.quoteId, inputs: saved.intentInputs,
+    }, 60_000));
+    if (result.quoteId !== saved.response.quoteId || result.status !== "settled") throw new Error("Unexpected execution result; check swap status");
+    bytes(result.txid, 32, "txid"); saved.result = result as unknown as SwapResult; await store.put(saved);
+    return saved.result;
+  }
+  async cancelIntent(quoteId: string): Promise<string> {
+    return this.exclusive(quoteId, async () => {
+      const saved = await this.saved(quoteId), { actor, chain } = this.options;
+      this.verify(saved.request, saved.response, false);
+      if (saved.result?.status === "cancelled") return saved.cancellation!.txid;
+      if (saved.response.protocol !== "intent-v1" || !saved.intentInputs || saved.result?.status === "settled" || !actor.identity)
+        throw new Error("No pending authorization to cancel");
+      const wallet = new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet);
+      if (!saved.cancellation) {
+        const coins = await wallet.coins();
+        if (!saved.intentInputs.every(input => coins.some(c => c.txid === input.coin.txid && c.vout === input.coin.vout)))
+          throw new Error("An authorized input was spent. Check swap status before cancelling.");
+        // Expiry alone cannot revoke a transaction the Emulator already co-signed.
+        // An owner self-spend makes all previous input authorizations unusable.
+        saved.cancellation = await wallet.prepareWithdrawal(wallet.contract.address);
+        await this.options.store.put(saved);
+      }
+      const txid = await wallet.submitWithdrawal(saved.cancellation);
+      saved.result = { quoteId, status: "cancelled" }; await this.options.store.put(saved);
+      return txid;
     });
   }
   /** Return an unspent funded offer through its owner leaf, including after quote expiry. */

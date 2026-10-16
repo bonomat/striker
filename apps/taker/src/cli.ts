@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { TakerClient, type SavedSwap, type SwapStore } from '@satora/taker-sdk';
+import { CovenantWallet, TakerClient, type SavedSwap, type SwapStore } from '@satora/taker-sdk';
+import { sha256 } from "@noble/hashes/sha2.js";
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, hex, main, object,
   parseOffer, parseQuoteRequest, readJSON, requestJSON, required, secretKey, takerContract,
   validateOfferFor, waitFor, writeJSON, loadConfig, parseDirection } from '@satora/striker-protocol';
 
-const HELP = `taker init | address | balance
+const HELP = `taker init | address | balance | move-legacy
+taker withdraw --to ARKADE_ADDRESS
 taker issue --amount UNITS  (mint a demo asset on the selected test network)
 taker quote [--striker URL] [--asset-id HEX] [--give-amount UNITS] [--direction token-to-btc|btc-to-token] [--out FILE]
 taker execute | refund [--quote FILE]
@@ -17,10 +19,10 @@ The private key is generated once in DIR/private-key. TAKER_PRIVATE_KEY imports 
 Execute/status use the most recent saved quote by default. All swaps go through Striker.`;
 
 main(async () => {
-  const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'out', 'quote', 'quote-id']);
+  const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'out', 'quote', 'quote-id', 'to']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status'].includes(command)) throw new Error(HELP);
+  if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status', 'move-legacy', 'withdraw'].includes(command)) throw new Error(HELP);
   const local = loadConfig('taker', typeof flags['config-dir'] === 'string' ? flags['config-dir'] : undefined);
   function quoteFile(): string {
     if (typeof flags.quote === 'string') return flags.quote;
@@ -40,14 +42,27 @@ main(async () => {
     console.log(JSON.stringify(await requestJSON(`${url}/v1/swaps/${encodeURIComponent(quoteId)}`)));
     return;
   }
-  const chain = await connectChain();
-  const actor = await createWallet(chain, secretKey('taker', local.keyDirectory));
+  const chain = await connectChain({ checkEmulator: !['address', 'balance', 'move-legacy', 'withdraw'].includes(command) });
+  const key = secretKey('taker', local.keyDirectory);
+  const actor = await createWallet(chain, key);
+  const covenant = new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet);
   try {
-    if (command === 'address') { console.log(JSON.stringify({ address: actor.address })); return; }
+    if (command === 'address') { console.log(JSON.stringify({ address: covenant.contract.address, legacyAddress: actor.address })); return; }
     if (command === 'balance') {
-      console.log(JSON.stringify({ role: 'taker', network: chain.settings.network, address: actor.address,
-        wallet: await actor.wallet.getBalance() }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+      console.log(JSON.stringify({ role: 'taker', network: chain.settings.network, address: covenant.contract.address,
+        wallet: await covenant.getBalance(), legacyWallet: await actor.wallet.getBalance() }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
       return;
+    }
+    if (command === 'move-legacy') {
+      console.log(JSON.stringify({ txid: await covenant.moveLegacy(), address: covenant.contract.address })); return;
+    }
+    if (command === 'withdraw') {
+      const file = path.join(local.directory, 'pending-withdrawal.json');
+      const saved = existsSync(file) ? object(readJSON(file)) : await covenant.prepareWithdrawal(required(flags.to, '--to'));
+      writeJSON(file, saved);
+      const txid = await covenant.submitWithdrawal(saved as unknown as Awaited<ReturnType<typeof covenant.prepareWithdrawal>>);
+      const { unlinkSync } = await import('node:fs'); unlinkSync(file);
+      console.log(JSON.stringify({ txid, status: 'withdrawn' })); return;
     }
     if (command === 'issue') {
       const amount = decimal(flags.amount, '--amount', true);
@@ -75,7 +90,8 @@ main(async () => {
     };
     const saved = command === 'quote' ? undefined : object(readJSON(file!)) as unknown as SavedSwap;
     const striker = required(flags.striker ?? saved?.striker ?? local.config.striker, 'striker');
-    const client = new TakerClient({ chain, actor, strikerUrl: striker, store });
+    const client = new TakerClient({ chain, actor: { ...actor, payoutScript: covenant.contract.tree.pkScript,
+      legacyPayoutScript: actor.payoutScript, signIntent: async message => schnorr.sign(sha256(message), key) }, strikerUrl: striker, store });
     if (command === 'quote') {
       const swap = await client.quote(assetId(flags['asset-id'] ?? local.config.assetId),
         decimal(flags['give-amount'] ?? local.config.giveAmount, 'giveAmount', true).toString(), parseDirection(flags.direction));

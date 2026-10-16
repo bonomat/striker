@@ -14,9 +14,9 @@ const stages = [
     text: "Makers sign prices against liquidity they have already deposited. Striker selects one offer, and your wallet checks its signature and terms.",
   },
   {
-    label: "Fund",
-    title: "Your payment stays on Arkade.",
-    text: "After you confirm, your wallet funds an offer on Arkade. Its spending conditions bind the swap to the payment you agreed to receive.",
+    label: "Authorize",
+    title: "Sign the terms. Keep your keys.",
+    text: "Your deposits are already in your swap wallet on Arkade. You sign an authorization that fixes your payment, minimum receipt and change. Striker receives the signature, never your key.",
   },
   {
     label: "Settle",
@@ -43,7 +43,7 @@ function NodeIcon({ kind }: { kind: "wallet" | "maker" | "striker" }) {
 function FlowRoutes({ stage, mobile = false }: { stage: number; mobile?: boolean }) {
   const routes = [
     {
-      id: "request", active: stage === 0 || stage === 1 || stage === 3,
+      id: "request", active: true,
       reverse: stage === 1,
       path: mobile ? "M460 79 H540" : "M250 172 H390",
     },
@@ -59,7 +59,7 @@ function FlowRoutes({ stage, mobile = false }: { stage: number; mobile?: boolean
         : "M610 172 H650 Q680 172 680 202 V228 Q680 258 710 258 H750",
     },
     {
-      id: "fund", active: stage === 2, reverse: false,
+      id: "fund", active: false, reverse: false,
       path: mobile ? "M40 79 H20 V498 Q20 528 50 528 H175"
         : "M140 228 V335 Q140 365 170 365 H360",
     },
@@ -145,7 +145,7 @@ export function HowItWorks({ assetSymbol, bitcoinToToken }: {
           <div className="flow-node flow-striker node-active">
             <span className="flow-node-id">THE COORDINATOR</span>
             <div className="flow-node-name"><NodeIcon kind="striker" /><strong>striker.</strong></div>
-            <p>{["Routing your request", "Selecting a signed offer", "Awaiting your funding", "Building the swap"][stage]}</p>
+            <p>{["Routing your request", "Selecting a signed offer", "Receiving your authorization", "Building the swap"][stage]}</p>
           </div>
 
           <div className={`flow-node flow-maker-a ${stage === 1 ? "node-active" : ""} ${stage > 0 ? "node-selected" : ""}`}>
@@ -160,14 +160,14 @@ export function HowItWorks({ assetSymbol, bitcoinToToken }: {
             <p>{stage === 1 ? "Another signed offer" : "Standing by"}</p>
           </div>
 
-          <div className={`flow-node flow-arkade ${stage === 2 || stage === 3 ? "node-active" : ""}`}>
+          <div className={`flow-node flow-arkade ${stage === 3 ? "node-active" : ""}`}>
             <img className="flow-arkade-mark" src={arkadeIcon} alt="" aria-hidden="true" />
             <div><strong>Arkade</strong><p>{stage === 3 ? "Both sides settle together" : "Where the assets move"}</p></div>
             <span className="flow-asset-pair"><b>{send}</b><span>⇄</span><b>{receive}</b></span>
           </div>
 
-          <span className="flow-wire-label flow-quote-label">{stage === 1 ? "SIGNED QUOTE" : "REQUEST"}</span>
-          <span className={`flow-wire-label flow-fund-label ${stage === 2 ? "label-active" : ""}`}>FUND ON ARKADE</span>
+          <span className="flow-wire-label flow-quote-label">{stage === 1 ? "SIGNED QUOTE" : stage === 2 ? "SIGNED INTENT" : "REQUEST"}</span>
+          <span className={`flow-wire-label flow-fund-label`}>DIRECT DEPOSITS</span>
           <span className={`flow-wire-label flow-settle-label ${stage === 3 ? "label-active" : ""}`}>BUILD & SUBMIT</span>
         </figure>
 

@@ -1,3 +1,4 @@
+import { buildIntentSettlement } from './intent-settlement.js';
 import { ArkAddress, CSVMultisigTapscript, EsploraProvider, Extension, InMemoryContractRepository,
   InMemoryWalletRepository, RestArkProvider, RestEmulatorProvider, RestIndexerProvider,
   SingleKey, Transaction, Wallet, attachPrevArkTxs, type VtxoScript } from '@arkade-os/sdk';
@@ -14,7 +15,7 @@ export interface ChainSettings {
   esploraUrl: string;
   emulatorKey: string;
 }
-export async function connectChainWithSettings(settings: ChainSettings) {
+export async function connectChainWithSettings(settings: ChainSettings, options: { checkEmulator?: boolean } = {}) {
   const ark = new RestArkProvider(settings.arkUrl);
   const indexer = new RestIndexerProvider(settings.arkUrl);
   const emulator = new RestEmulatorProvider(settings.emulatorUrl);
@@ -24,11 +25,13 @@ export async function connectChainWithSettings(settings: ChainSettings) {
   if (Number(info.fees.txFeeRate) !== 0) throw new Error('PoC settlement requires zero offchain transaction fees');
   const server = bytes(info.signerPubkey, 33, 'server public key').slice(-32);
   const emulatorKey = bytes(settings.emulatorKey, 32, 'EMULATOR_PUBKEY');
-  const emulatorInfo = await emulator.getInfo();
-  if (emulatorInfo.signerPubkey.slice(-64) !== hex(emulatorKey))
-    throw new Error('Emulator signer does not match the configured pinned key');
+  if (options.checkEmulator !== false) await checkEmulator({ emulator, emulatorKey });
   const checkpoint = CSVMultisigTapscript.decode(Uint8Array.from(info.checkpointTapscript.match(/../g)!, byte => Number.parseInt(byte, 16)));
   return { ark, indexer, emulator, server, emulatorKey, checkpoint, settings };
+}
+export async function checkEmulator(chain: { emulator: RestEmulatorProvider; emulatorKey: Uint8Array }) {
+  const info = await chain.emulator.getInfo();
+  if (info.signerPubkey.slice(-64) !== hex(chain.emulatorKey)) throw new Error('Emulator signer does not match the configured pinned key');
 }
 export type Chain = Awaited<ReturnType<typeof connectChainWithSettings>>;
 export async function createWallet(chain: Chain, secret: Uint8Array) {
@@ -94,5 +97,13 @@ export async function settle(chain: Chain, terms: Settlement) {
   await attachPrevArkTxs(arkTx, [terms.makerCoin.txid, terms.userCoin.txid], chain.indexer);
   const result = await chain.emulator.submitTx(encodeBase64(arkTx.toPSBT()),
     checkpoints.map(cp => encodeBase64(cp.toPSBT())));
+  return { txid: Transaction.fromPSBT(decodeBase64(result.signedArkTx)).id };
+}
+
+export async function settleIntent(...args: Parameters<typeof buildIntentSettlement>) {
+  const [chain, , maker, taker] = args;
+  const { arkTx, checkpoints } = buildIntentSettlement(...args);
+  await attachPrevArkTxs(arkTx, [maker.coin.txid, ...taker.coins.map(c => c.txid)], chain.indexer);
+  const result = await chain.emulator.submitTx(encodeBase64(arkTx.toPSBT()), checkpoints.map(cp => encodeBase64(cp.toPSBT())));
   return { txid: Transaction.fromPSBT(decodeBase64(result.signedArkTx)).id };
 }

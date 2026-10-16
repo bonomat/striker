@@ -80,7 +80,7 @@ export function parseQuoteRequest(value: unknown): QuoteRequest {
   return { ...parseMarketRequest(r), takerPublicKey: hex(bytes(r.takerPublicKey, 32, 'takerPublicKey')),
     takerPayoutScript: hex(p2tr(r.takerPayoutScript, 'takerPayoutScript')) };
 }
-export interface QuoteResponse { quoteId: string; offer: ReturnType<typeof offerJSON>; fundingAddress: string }
+export interface QuoteResponse { quoteId: string; offer: ReturnType<typeof offerJSON>; fundingAddress: string; protocol?: 'intent-v1' }
 export const nowSeconds = () => BigInt(Math.floor(Date.now() / 1000));
 export function validateOfferFor(o: SignedOffer, request: MarketRequest, checkExpiry = true): void {
   if (parseDirection(o.deposit.direction) !== parseDirection(request.direction) ||

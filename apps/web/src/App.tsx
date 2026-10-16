@@ -199,6 +199,10 @@ export default function App() {
   const [password, setPassword] = useState(""),
     [confirmation, setConfirmation] = useState(""),
     [importKey, setImportKey] = useState("");
+  const [legacyBalance, setLegacyBalance] = useState<WalletBalance | null>(null);
+  const [withdrawAddress, setWithdrawAddress] = useState("");
+  const [walletAction, setWalletAction] = useState(false);
+  const [walletActionError, setWalletActionError] = useState("");
   const [walletMode, setWalletMode] = useState<"create" | "import">("create"),
     [costsOpen, setCostsOpen] = useState(false),
     [copied, setCopied] = useState(false);
@@ -220,7 +224,7 @@ export default function App() {
   const records = account?.store.list() ?? [];
   const history = records.filter(
     (swap) =>
-      swap.fundingStartedAt || swap.funding || swap.result || swap.refund,
+      swap.intentSubmittedAt || swap.fundingStartedAt || swap.funding || swap.result || swap.refund,
   );
   const pending = history.find(
     (swap) => !swap.result && swap.refund?.status !== "refunded",
@@ -277,7 +281,8 @@ export default function App() {
     refreshing.current = true;
     setBalanceRefreshing(true);
     try {
-      setBalance(await account.wallet.getBalance());
+      const [current, previous] = await Promise.all([account.covenant.getBalance(), account.wallet.getBalance()]);
+      setBalance(current); setLegacyBalance(previous);
       setBalanceError("");
     } catch {
       setBalanceError("Balance unavailable. Try refreshing.");
@@ -579,13 +584,36 @@ export default function App() {
         await refreshBalance();
       } else if (status.status === "failed")
         setActionError(
-          "Execution needs attention. You can return an unspent offer to your wallet.",
+          "Execution needs attention. Check status before trying again; unspent deposits stay in your wallet.",
         );
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
       setBusy(false);
     }
+  }
+  async function movePreviousFunds() {
+    if (!account || walletAction) return;
+    setWalletAction(true); setWalletActionError("");
+    try { await withWalletLock(account, () => account.covenant.moveLegacy()); await refreshBalance(); }
+    catch (error) { setWalletActionError(errorMessage(error)); }
+    finally { setWalletAction(false); }
+  }
+  async function withdrawFunds() {
+    if (!account || walletAction) return;
+    setWalletAction(true); setWalletActionError("");
+    try {
+      await withWalletLock(account, async () => {
+        const storageKey = `striker.withdrawal:${account.publicHex}:${config!.network}`;
+        const pending = localStorage.getItem(storageKey);
+        const prepared = pending ? JSON.parse(pending) : await account.covenant.prepareWithdrawal(withdrawAddress.trim());
+        localStorage.setItem(storageKey, JSON.stringify(prepared));
+        await account.covenant.submitWithdrawal(prepared);
+        localStorage.removeItem(storageKey);
+      });
+      setWithdrawAddress(""); await refreshBalance();
+    } catch (error) { setWalletActionError(errorMessage(error)); }
+    finally { setWalletAction(false); }
   }
   async function refund() {
     if (!account || !activeSwap || busy) return;
@@ -643,6 +671,7 @@ export default function App() {
         !!quoteError));
   const succeeded = activeSwap?.result?.status === "settled",
     refunded = activeSwap?.refund?.status === "refunded";
+  const cancelledIntent = activeSwap?.result?.status === "cancelled";
   const displayedSwap =
     activeSwap ?? (quote?.response.quoteId === selected ? quote : undefined);
   const primaryClick = () => {
@@ -984,7 +1013,7 @@ export default function App() {
                     : "Your wallet. Your move."
           }
           close={() => {
-            if (!walletBusy) {
+            if (!walletBusy && !walletAction) {
               setModal(null);
               resetWalletForm("none");
             }
@@ -1014,6 +1043,14 @@ export default function App() {
                   ? "Stays unlocked in this tab until you lock it or close the tab."
                   : "Unlock with your password again after reloading this tab."}
               </p>
+              <p className="small-print">Deposits arrive directly in your swap wallet. Payments and change return here after each swap.</p>
+              {legacyBalance && legacyBalance.total > 0 && <div className="legacy-wallet-funds">
+                <p className="small-print">Previous wallet: {legacyBalance.total.toLocaleString()} sats
+                  {legacyBalance.assets.length ? ` and ${legacyBalance.assets.length} asset type(s)` : ""}. Move these funds to make them available for swaps.</p>
+                <button className="secondary-button" disabled={walletAction || busy} onClick={() => void movePreviousFunds()}>
+                  {walletAction ? "Moving funds…" : "Move previous wallet funds"}
+                </button>
+              </div>}
               <WalletAddress address={account.address} />
               <button
                 className="secondary-button"
@@ -1036,9 +1073,18 @@ export default function App() {
                 spend your funds. Keep it safe; recovery does not need your old
                 password.
               </p>
+              <details className="wallet-withdrawal">
+                <summary>Send all funds to another Arkade wallet</summary>
+                <p className="small-print">Uses your owner key and Arkade server. Striker and the Emulator are not needed.</p>
+                <input aria-label="Withdrawal Arkade address" placeholder="Arkade destination address" value={withdrawAddress}
+                  onChange={event => setWithdrawAddress(event.target.value)} />
+                <button className="secondary-button" disabled={walletAction || busy || !withdrawAddress.trim()}
+                  onClick={() => void withdrawFunds()}>{walletAction ? "Sending…" : "Send all funds"}</button>
+              </details>
+              {walletActionError && <p className="inline-error" role="alert">{walletActionError}</p>}
               <button
                 className="text-button lock-wallet"
-                disabled={busy}
+                disabled={busy || walletAction}
                 onClick={() => {
                   void walletSession.clear();
                   void account.wallet.dispose();
@@ -1271,7 +1317,7 @@ export default function App() {
       {modal === "receive" && account && (
         <Modal title="Bring your assets." close={() => setModal(null)}>
           <p className="modal-caption">
-            Send BTC or {asset.symbol} on Arkade to your wallet. Use the same
+            Send BTC or {asset.symbol} on Arkade directly to your swap wallet. Use the same
             network and Arkade server.
           </p>
           <div className="receive-symbol">
@@ -1368,7 +1414,7 @@ export default function App() {
                   >
                     {swap.result?.status === "settled"
                       ? "Complete"
-                      : swap.refund?.status === "refunded"
+                      : swap.result?.status === "cancelled" ? "Cancelled" : swap.refund?.status === "refunded"
                         ? "Returned"
                         : "In progress"}{" "}
                     ↗
@@ -1452,7 +1498,7 @@ export default function App() {
           </button>
           {expires < MIN_QUOTE_FUNDING_SECONDS && (
             <p className="inline-error">
-              Refresh this quote so there is enough time to fund and settle your swap.
+              Refresh this quote so there is enough time to authorize and settle your swap.
             </p>
           )}
         </Modal>
@@ -1486,11 +1532,13 @@ export default function App() {
           <p className="result-caption">
             {succeeded
               ? "Swap complete. Your assets are in your Arkade wallet."
-              : refunded
+              : cancelledIntent
+                ? "Authorization cancelled. Your deposits are back in your swap wallet."
+                : refunded
                 ? "Your unspent payment has been returned."
                 : busy
                   ? "Keep this window open while your swap settles."
-                  : "Check the swap status, resume execution, or return an unspent offer."}
+                  : displayedSwap?.response.protocol === "intent-v1" ? "Check the swap status or resume execution. Unspent deposits remain in your wallet." : "Check the swap status, resume execution, or return an unspent offer."}
           </p>
           {displayedSwap && (
             <div className="result-amount">
@@ -1526,15 +1574,15 @@ export default function App() {
                 <Check />
                 Quote verified locally
               </div>
-              <div className={activeSwap?.funding ? "done" : "current"}>
-                {activeSwap?.funding ? (
+              <div className={(activeSwap?.funding || activeSwap?.intentInputs) ? "done" : "current"}>
+                {(activeSwap?.funding || activeSwap?.intentInputs) ? (
                   <Check />
                 ) : (
                   <span className="step-dot" />
                 )}
-                Fund your swap
+                {displayedSwap?.response.protocol === "intent-v1" ? "Sign swap authorization" : "Fund your swap"}
               </div>
-              <div className={activeSwap?.funding ? "current" : ""}>
+              <div className={(activeSwap?.funding || activeSwap?.intentInputs) ? "current" : ""}>
                 <span className="step-dot" />
                 Settle through Striker
               </div>
@@ -1552,10 +1600,12 @@ export default function App() {
               fundingVout={displayedSwap.funding?.fundingVout}
               settlementTxid={displayedSwap.result?.txid}
               refundTxid={displayedSwap.refund?.txid}
+              cancellationTxid={displayedSwap.cancellation?.txid}
+              depositInputs={displayedSwap.intentInputs}
               network={config?.network ?? "regtest"}
             />
           )}
-          {!busy && (succeeded || refunded) && (
+          {!busy && (succeeded || refunded || cancelledIntent) && (
             <button
               className="swap-button modal-primary"
               onClick={() => {
@@ -1569,7 +1619,7 @@ export default function App() {
               </Icon>
             </button>
           )}
-          {!busy && activeSwap && !succeeded && !refunded && (
+          {!busy && activeSwap && !succeeded && !refunded && !cancelledIntent && (
             <>
               <button
                 className="swap-button modal-primary"
@@ -1577,6 +1627,16 @@ export default function App() {
               >
                 Check status
               </button>
+              {activeSwap.response.protocol === "intent-v1" && <>
+                <button className="secondary-button" onClick={() => void execute(activeSwap)}>Resume execution</button>
+                <button className="text-button" onClick={async () => {
+                  if (!account || busy) return;
+                  setBusy(true); setActionError("");
+                  try { await withWalletLock(account, () => account.client.cancelIntent(activeSwap.response.quoteId)); setRevision(v => v + 1); await refreshBalance(); }
+                  catch (error) { setActionError(errorMessage(error)); }
+                  finally { setBusy(false); }
+                }}>Cancel authorization and keep funds</button>
+              </>}
               {activeSwap.funding && (
                 <>
                   <button

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { TakerClient, type SavedSwap } from '@satora/taker-sdk';
 import { attachPrevArkTxs, Transaction } from '@arkade-os/sdk';
 import { connectChain, createWallet, fundedCoin, hex, makerContract, object, parseOffer,
-  requestJSON, waitFor, takerContract, liveMaker, buildSettlement, signQuote, encodeBase64 } from '@satora/striker-protocol';
+  requestJSON, waitFor, takerContract, reusableTakerContract, liveMaker, buildSettlement, signQuote, encodeBase64 } from '@satora/striker-protocol';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -100,6 +100,7 @@ test('independent maker, striker, and taker processes trade exclusively through 
     const maker = await start('maker', ['serve', '--state', firstState], makerKey);
     const bestMaker = await start('maker', ['serve', '--state', betterState], betterKey);
     const striker = await start('striker', ['serve', '--makers', `${maker.url},${bestMaker.url},http://127.0.0.1:1`]);
+    await command('taker', ['move-legacy'], takerKey);
     const quoteFile = path.join(directory, 'quote.json');
     let response: Record<string, unknown>;
     await t.test('taker requests Striker; it selects the best live maker and tolerates an unavailable maker', async () => {
@@ -129,7 +130,7 @@ test('independent maker, striker, and taker processes trade exclusively through 
       const makerTree = makerContract(chain, offer).tree;
       const remainder = await fundedCoin(chain, makerTree, String(result.txid));
       assert.equal(remainder.value, 89_000);
-      await waitFor(async () => (await chain.indexer.getVtxos({ scripts: [hex(taker.payoutScript)], spendableOnly: true })).vtxos
+      await waitFor(async () => (await chain.indexer.getVtxos({ scripts: [hex(reusableTakerContract(chain, taker.publicKey).tree.pkScript)], spendableOnly: true })).vtxos
         .find(v => v.txid === result.txid && v.value === 11_000), 'taker BTC payment');
       await waitFor(async () => (await chain.indexer.getVtxos({ scripts: [hex(better.payoutScript)], spendableOnly: true })).vtxos
         .find(v => v.txid === result.txid && v.assets?.some(a => a.assetId === assetId && BigInt(a.amount) === 2_000n)), 'maker asset payment');
@@ -142,6 +143,7 @@ test('independent maker, striker, and taker processes trade exclusively through 
       await assert.rejects(requestJSON(`${striker.url}/v1/quotes`, { assetId, giveAmount: 2000,
         takerPublicKey: hex(taker.publicKey), takerPayoutScript: hex(taker.payoutScript) }), /Invalid giveAmount/);
     });
+    await command('taker', ['withdraw', '--to', taker.address], takerKey);
     await t.test('BTC-only users buy tokens through Striker, the token deposit recurs, and BTC refunds work', async () => {
       const reverseFile = path.join(directory, 'reverse.json');
       await command('maker', ['deposit', '--direction', 'btc-to-token', '--asset-id', assetId,

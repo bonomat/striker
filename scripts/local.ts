@@ -1,3 +1,4 @@
+import { CovenantWallet } from '@satora/taker-sdk';
 import { startLocalEmulator, stopLocalEmulator, localEmulatorLogs } from './local-emulator.js';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
@@ -42,13 +43,15 @@ async function setup() {
     taker = await createWallet(chain, secretKey('taker', local.taker.keyDirectory));
     console.log(JSON.stringify({ network, arkUrl: chain.settings.arkUrl,
       funding: [{ role: 'maker', address: maker.address }, { role: 'taker', address: taker.address }] }, null, 2));
+    const takerCovenant = new CovenantWallet(chain, taker.publicKey, taker.identity, taker.wallet);
     const depositFile = path.join(local.maker.directory, 'deposit.json');
     const liquiditySats = emulatorMode(network) === 'local' ? 20_000 : network === 'mutinynet' ? 25_000 : 100_000;
     const fundingErrors: string[] = [];
     for (const [role, actor] of [['maker', maker], ['taker', taker]] as const) {
       const minimum = network === 'regtest' ? 500_000 :
         role === 'maker' && !existsSync(depositFile) ? liquiditySats + 1_000 : 1_000;
-      if ((await actor.wallet.getBalance()).available < minimum) {
+      const held = (await actor.wallet.getBalance()).available + (role === 'taker' ? (await takerCovenant.getBalance()).available : 0);
+      if (held < minimum) {
         try {
           if (network === 'regtest') {
             await exec(process.execPath, [path.join(root, 'scripts/regtest.mjs'), 'ark', 'send', '--to',
@@ -104,9 +107,11 @@ async function setup() {
           (await coinsAt(chain, makerContract(chain, { deposit }).tree)).length !== 1)
         throw new Error('Saved reverse deposit is unavailable or belongs to different infrastructure');
     }
-    console.log(JSON.stringify({ ready: true, network, makerAddress: maker.address, takerAddress: taker.address,
+    console.log(JSON.stringify({ ready: true, network, makerAddress: maker.address, takerAddress: takerCovenant.contract.address, legacyTakerAddress: taker.address,
       assetId, configDirs: [local.striker.directory, local.maker.directory, local.taker.directory] }, null, 2));
     const profileArg = emulatorMode(network) === 'local' ? ' local' : '';
+    if ((await taker.wallet.getBalance()).available >= 330)
+      console.log('Existing CLI funds need one transfer: npm run taker -- move-legacy (use the same network/profile environment). New deposits should use takerAddress above.');
     console.log(`Run just start ${network}${profileArg}, then just taker ${local.taker.config.giveAmount} ${network}${profileArg} in another terminal.`);
   } finally { await taker?.wallet.dispose(); await maker.wallet.dispose(); }
 }

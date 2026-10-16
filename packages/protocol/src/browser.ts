@@ -4,3 +4,6 @@ export * from './wire.js';
 export * from './chain-client.js';
 export * from './encoding.js';
 export * from './transport.js';
+export * from './intent.js';
+export * from './intent-settlement.js';
+export * from './settlement.js';

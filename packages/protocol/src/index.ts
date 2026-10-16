@@ -8,3 +8,5 @@ export * from './cli.js';
 export * from './config.js';
 export * from './network.js';
 export * from './encoding.js';
+export * from './intent.js';
+export * from './intent-settlement.js';

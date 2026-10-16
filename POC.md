@@ -11,9 +11,9 @@ format remains the reference for a later Rust implementation.
 |---|---|---|
 | `apps/striker` | `striker` | Maker endpoint configuration, quote selection, transaction construction and submission |
 | `apps/maker` | `maker` | Maker private key, liquidity deposit, pricing and quote signatures |
-| `apps/taker` | `taker` | Taker private key, quote selection request, funding and swap execution request |
+| `apps/taker` | `taker` | Taker private key, quote requests, signed intents and owner withdrawals |
 | `apps/web` | Vite / React | Browser wallet, swap review, activity and recovery through the taker SDK |
-| `packages/taker-sdk` | Library only | Browser-safe quote verification, funding, execution, status and refunds |
+| `packages/taker-sdk` | Library only | Browser-safe quote verification, covenant balances, signed intents, execution and recovery |
 | `packages/protocol` | Library only | Covenant scripts, signed quote encoding, HTTP types and Arkade adapters |
 
 ```mermaid
@@ -25,22 +25,83 @@ sequenceDiagram
     T->>S: Request quote for asset quantity
     S->>M: Request signed quote
     M-->>S: Signed terms against deposited liquidity
-    S-->>T: Best quote + user covenant funding address
-    Note over T: Derive address locally, verify, fund via Arkade
-    T->>S: Execute quote with funded outpoint
+    S-->>T: Best quote + reusable taker covenant address
+    Note over T: Deposits already reside in this covenant; verify quote and sign intents
+    T->>S: Accept quote with signed taker input authorizations
     S->>A: Construct, validate and settle atomic swap
     S-->>T: Settlement transaction ID
 ```
 
 There is **no maker–taker transport**. Only Striker knows maker endpoint URLs;
 the taker receives public signed terms, never a maker URL. Maker quoting receives
-only the asset and amount, not the taker's identity. Wallets use Arkade directly
-to deposit/fund, but requests for quotes and swap execution go through Striker.
+only the asset and amount, not the taker's identity. Wallets receive deposits directly at their reusable Arkade covenant address, but requests for quotes and swap execution go through Striker.
 Striker holds neither actor's private key. A maker can go offline after quoting.
 
 Each app has its own `package.json`, build configuration, and executable wrapper.
 They share one npm workspace lockfile. Build output is regular Node JavaScript;
 these are executable TypeScript projects, not native Rust binaries yet.
+
+## Reusable taker wallet (intent v1)
+
+New browser and CLI receive addresses are reusable taker covenants. Deposit BTC
+and tokens directly to this address. A swap needs two client requests: request a
+quote, then accept it with signed input intents. Striker constructs and submits
+one Arkade swap transaction; there is no per-swap funding transaction.
+
+The owner signs SHA256 of a 218-byte, domain-separated batch message:
+`striker/intent/v1\0`, a 32-byte network/server/Emulator commitment, maker script
+hash, maker witness hash, market asset txid/group, direction, minimum receive
+amount, deadline, input-record hash and input count. Each 56-byte input record
+contains a taker checkpoint txid plus eight-byte vout, BTC contribution and token
+contribution. Hashes/txids are 32 bytes; numeric fields use unsigned u63 LE in
+eight bytes. Asset and checkpoint txids use VM/internal byte order. The maker
+script and exact signed quote witness are bound, while its outpoint remains free.
+
+Every taker input receives the identical signature, message and complete input
+record list. The VM verifies the record hash, exact input count, each input's
+record and identical witness hashes across the taker inputs. This prevents
+combining authorizations from separate swap attempts, including authorizations
+with overlapping inputs but different contribution distributions. The fixed
+maximum of four taker inputs keeps records below the VM's 520-byte stack-element
+limit and leaves transaction-weight headroom. `vectors/intent-v1.json` fixes the
+message encoding, signature and recoverable covenant address for future ports.
+
+Input 0 is the maker; inputs 1..N are authorized taker deposits (maximum four).
+Output 0 returns the receipt to the taker covenant, output 1 returns maker
+liquidity, output 2 pays the maker, and output i+2 returns change for taker input i.
+Each taker predicate verifies its owner signature, expiry, own checkpoint
+outpoint, maker script/witness commitments, receipt and exact per-input change.
+`OP_TUNNEL` preserves the change script and every unrelated asset. The market
+asset remainder is checked separately. Distinct change slots prevent multiple
+inputs from claiming the same change output. Each change output retains at least
+330 sats; BTC-to-token receipts also need a 330-sat carrier. These reserves remain
+in the wallet. Token-to-BTC pays a 330-sat carrier to the maker with its tokens.
+
+Browser balances show covenant funds and expose **Move previous wallet funds**
+when the old ordinary address still holds funds. This is an explicit one-time
+transfer; keys and old swap records are preserved. Old funded offers can still
+be refunded through their owner path. The encrypted key and recovery file formats
+are unchanged; the same key derives both addresses.
+
+CLI migration: `npm run taker -- move-legacy` (regtest), or
+`STRIKER_NETWORK=mutinynet STRIKER_EMULATOR=local npm run taker -- move-legacy`
+for the existing local-Emulator deployment. Setup reports both addresses and
+preserves previous-wallet funds until this explicit transfer. `taker address` reports the new
+receive address and the previous address; `taker balance` reports both balances.
+`taker withdraw --to ARKADE_ADDRESS` withdraws all covenant funds through the
+owner branch. Browser owner withdrawals and authorization cancellation use arkd
+without Striker or the Emulator. Cancellation self-spends the deposits back to
+the same covenant, invalidating old input authorizations while preserving funds.
+Expiry alone does not revoke a transaction already co-signed before its deadline.
+Signed authorizations and owner transaction packages are saved before submission;
+retries reuse the same package. Orders remain in memory on Striker, so restart
+recovery is still limited and an uncertain submission must be checked on Arkade.
+
+The previous quote/fund/execute implementation is preserved at Git tag
+`poc-three-message-baseline`. Its `/v1/quotes` and `/v1/swaps` routes remain for
+old clients; new clients use `/v2/quotes` and `/v2/swaps`. Status for both uses
+`GET /v1/swaps/:quoteId`. Existing maker deposits and signed quote formats are
+unchanged. New service code must be running before deploying the new frontend.
 
 ## Run
 
@@ -190,6 +251,8 @@ strings; bytes are lowercase hex. The existing signed quote bytes are unchanged.
 | Service | Endpoint | Purpose |
 |---|---|---|
 | Maker | `POST /v1/quotes` | Receive asset/amount from Striker; return a signed quote |
+| Striker | `POST /v2/quotes` | Verify reusable taker address and select a signed maker quote |
+| Striker | `POST /v2/swaps` | Verify signed taker input intents, resolve current liquidity and settle |
 | Striker | `POST /v1/quotes` | Poll configured makers, validate live liquidity, choose most BTC for the same asset amount |
 | Striker | `POST /v1/swaps` | Receive quote ID and funding txid/vout; reconstruct, validate, and settle |
 | Striker | `GET /v1/swaps/:quoteId` | Return execution status and settled txid |
@@ -202,7 +265,7 @@ txid. A failed submission is held as failed rather than automatically resubmitte
 because a network error may occur after settlement. Status is lost on restart;
 durable execution records and recovery are future work.
 
-## First transaction
+## Legacy per-swap funding transaction
 
 Inputs:
 
@@ -564,7 +627,7 @@ Script VM is implemented here.
 
 ## Boundaries
 
-- One maker deposit and one user offer per settlement, in either direction. Striker selects
+- One maker deposit and up to four taker covenant inputs per intent settlement, in either direction. Striker selects
   among several makers, but does not aggregate deposits, route multiple hops,
   or charge service fees. Maker prices are configured integer fractions.
 - The services support regtest and Mutinynet with in-memory orders and no durable

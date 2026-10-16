@@ -77,14 +77,14 @@ export function WalletBalances({
               </span>
               <div className="wallet-asset-info">
                 <strong>Bitcoin</strong>
-                <span>Available on Arkade</span>
+                <span>Swap wallet on Arkade</span>
               </div>
               <div className="wallet-asset-amount">
                 <strong>
-                  {BigInt(balance.available).toLocaleString()} <span>sats</span>
+                  {BigInt(balance.total).toLocaleString()} <span>sats</span>
                 </strong>
                 {balance.total !== balance.available && (
-                  <small>{BigInt(balance.total).toLocaleString()} sats total</small>
+                  <small>{BigInt(balance.available).toLocaleString()} sats available to swap</small>
                 )}
               </div>
             </li>
