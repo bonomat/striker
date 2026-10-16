@@ -11,7 +11,9 @@ import { args, assetId, connectChain, createWallet, decimal, depositJSON, epochO
 
 const HELP = `maker init | address | balance [--state FILE]
 maker deposit --asset-id HEX --sats SATS --rate-numerator N --rate-denominator D [--state FILE]
+maker deposit --direction btc-to-token --asset-id HEX --tokens UNITS --sats SATS --rate-numerator N --rate-denominator D
 maker serve [--state FILE] [--host 127.0.0.1] [--port 4101] [--ttl-seconds 30]
+Serve loads deposit.json and reverse-deposit.json; --reverse-state overrides the token pool path.
 --config-dir DIR defaults to .maker (or MAKER_CONFIG_DIR).
 The private key is generated once in DIR/private-key. MAKER_PRIVATE_KEY imports an existing key.
 Rates are BTC sats per asset atomic unit, as an integer fraction.\n--network regtest|mutinynet (or STRIKER_NETWORK). Keys are shared; state is per network.`;
@@ -83,7 +85,17 @@ main(async () => {
           availableToSwapSats: coins.length === 1 && coins[0]!.value >= 660 ? coins[0]!.value - 330 : 0 };
       }
       console.log(JSON.stringify({ role: 'maker', network: chain.settings.network, address: actor.address,
-        wallet: await actor.wallet.getBalance(), deposit }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+        wallet: await actor.wallet.getBalance(), deposit,
+        reverseDeposit: await (async () => {
+          const file = path.join(local.directory, 'reverse-deposit.json');
+          if (!existsSync(file)) return null;
+          const state = loadState(file, chain, key), { tree } = makerContract(chain, state);
+          const coins = await coinsAt(chain, tree), assetId = hex(state.deposit.wantAsset);
+          const tokens = coins.reduce((sum, coin) => sum + BigInt(coin.assets?.find(a => a.assetId === assetId)?.amount ?? 0), 0n);
+          return { address: tree.address('tark', chain.server).encode(), assetId, tokens,
+            sats: coins.reduce((sum, coin) => sum + coin.value, 0), liveTips: coins.length,
+            availableToSwapTokens: coins.length === 1 && tokens > 0n ? tokens - 1n : 0n };
+        })() }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
       return;
     }
     const file = stateFile;

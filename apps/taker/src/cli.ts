@@ -9,7 +9,7 @@ import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, 
 
 const HELP = `taker init | address | balance
 taker issue --amount UNITS  (mint a demo asset on the selected test network)
-taker quote [--striker URL] [--asset-id HEX] [--give-amount UNITS] [--out FILE]
+taker quote [--striker URL] [--asset-id HEX] [--give-amount UNITS] [--direction token-to-btc|btc-to-token] [--out FILE]
 taker execute | refund [--quote FILE]
 taker status [--striker URL] [--quote-id ID]
 --network regtest|mutinynet (or STRIKER_NETWORK).\n--config-dir DIR defaults to .taker (or TAKER_CONFIG_DIR).

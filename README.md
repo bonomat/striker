@@ -15,10 +15,14 @@ persist in ignored `.maker/` and `.taker/` directories across restarts; service
 settings live in `.striker/`. For Mutinynet, use `just setup mutinynet`,
 `just start mutinynet`, then `just taker 2000 mutinynet`. Keys are shared;
 network state is separate. Fund both Mutinynet wallets before setup; it checks
-the balances before issuing the demo token and never calls the public faucet. See [Mutinynet setup and planned Arkade swap UI](./POC.md#mutinynet-setup).
+the balances before issuing the demo token and never calls the public faucet. See [Mutinynet setup and Arkade swap UI](./POC.md#mutinynet-setup).
 Use `just setup mutinynet local`, `just start mutinynet local`, and
 `just taker 100 mutinynet local` to test against a local Emulator with full logs
-while settling on Mutinynet. `just --list` shows the other commands.
+while settling on Mutinynet. Run `just web mutinynet local` for the browser interface
+at `http://127.0.0.1:5173`. It swaps BTC ↔ POC through the shared taker SDK, with an
+encrypted browser wallet, live quotes, activity and refunds. Rerun setup and restart
+older services to provision/load the token pool for BTC → POC. `just --list` shows
+the other commands.
 
 ---
 

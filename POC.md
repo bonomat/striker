@@ -1,7 +1,7 @@
 # TypeScript service PoC
 
-This PoC trades a Striker BTC liquidity deposit against a Banco-style user offer
-selling an Arkade test asset for BTC. Three independently runnable TypeScript
+This PoC swaps Arkade tokens and BTC in both directions using recursive maker
+liquidity deposits and user offers that enforce the quoted receive amount. Three independently runnable TypeScript
 projects implement the maker, router/executor, and user. The shared covenant byte
 format remains the reference for a later Rust implementation.
 
@@ -12,6 +12,8 @@ format remains the reference for a later Rust implementation.
 | `apps/striker` | `striker` | Maker endpoint configuration, quote selection, transaction construction and submission |
 | `apps/maker` | `maker` | Maker private key, liquidity deposit, pricing and quote signatures |
 | `apps/taker` | `taker` | Taker private key, quote selection request, funding and swap execution request |
+| `apps/web` | Vite / React | Browser wallet, swap review, activity and recovery through the taker SDK |
+| `packages/taker-sdk` | Library only | Browser-safe quote verification, funding, execution, status and refunds |
 | `packages/protocol` | Library only | Covenant scripts, signed quote encoding, HTTP types and Arkade adapters |
 
 ```mermaid
@@ -130,7 +132,8 @@ subsequent edits.
 | `.striker/config.json` | Maker endpoint list, bind host and port; **no private key** |
 | `.maker/config.json` | Bind host/port and quote TTL |
 | `.maker/private-key` | Persistent maker signing/wallet key |
-| `.maker/deposit.json` | Public liquidity deposit, original outpoint and configured price fraction |
+| `.maker/deposit.json` | BTC liquidity deposit, original outpoint and configured price fraction |
+| `.maker/reverse-deposit.json` | Token liquidity deposit for BTC → token swaps |
 | `.taker/config.json` | Striker URL, test asset ID and default quantity |
 | `.taker/private-key` | Persistent taker wallet key |
 | `.taker/quotes/` | Separate quote, funding and execution records for each trade |
@@ -256,7 +259,11 @@ the taker wallet, saves its asset ID, and deposits 25,000 maker sats with the
 configured demo rate of 5 sats per asset atomic unit. This is a demo token, not
 USDt. Repeated setup reuses the saved asset and deposit. Preserve these state
 files as well as the keys; deleting them can create another asset or deposit.
-The maker sells BTC; the taker sells the token and receives Arkade BTC.
+Setup also provisions a token pool with 2,000 POC and a 660-sat carrier. If necessary,
+it transfers POC from the taker to the maker through Arkade before depositing.
+This enables BTC → POC for users who start with BTC. Both directions use separate
+recursive deposits and the same configured rate; proceeds arrive in the maker
+wallet and are not automatically reinvested into the opposite deposit.
 
 | Data | Regtest | Mutinynet |
 |---|---|---|
@@ -363,31 +370,62 @@ this workaround applies to the local profile. Failed diagnostic orders are
 preserved in the local quote directory for inspection; they must not be blindly
 retried or re-funded based only on a client error.
 
-## Planned swap interface and taker SDK
+## Browser swap interface and taker SDK
 
-The first web interface will swap **USDt on Arkade → BTC on Arkade**. Follow the
-[saved visual reference](./docs/swap-reference.png): amount cards, balance, percentage buttons, quoted receive
-amount, fee details and primary action. Both cards show Arkade; there are no
-Lightning, on-chain, Arbitrum or bridge destinations in this scope.
+`apps/web` provides the swap interface following the [saved visual reference](./docs/swap-reference.png).
+It supports **BTC ↔ POC on Arkade**, defaults to BTC → POC, and shows the active
+network and demo token honestly. The direction button swaps the input and output
+assets. Live balances, percentage buttons, signed quotes with expiry, cost details,
+review, settlement results and local activity all use real wallet/service data.
 
-The frontend will use a reusable TypeScript taker SDK, shared with the taker CLI.
-Extract quote verification, local covenant/address derivation, funding, execution
-and status handling from the CLI into that library before adding the UI. The
-SDK takes an Arkade wallet/signer and an application-provided persistence adapter;
-it must not depend on Node files, environment variables or CLI key files. The
-browser owns its wallet keys. Persist funded-swap progress before requesting
-execution, and support resuming from a reload. Keep decimal amounts as strings
-or bigint; convert displayed USDt using the selected asset's actual decimals.
+For the existing Mutinynet / local Emulator profile:
 
-Quotes and execution requests go exclusively through Striker. Only wallet
-funding and chain queries talk directly to Arkade. The frontend never contacts
-makers. Use a configured and verified **asset ID**, not a ticker match, to
-identify USDt. Demo setup issues POC; it does not issue genuine USDt. A real
-USDt market needs existing USDt on this Arkade deployment, a funded taker and a
-maker configured to price that asset. The current PoC implements only token →
-BTC; a reverse button must wait for BTC → token settlement support.
+```sh
+just setup mutinynet local  # adds the token pool if it is missing; no public faucet
+just start mutinynet local  # restart an older running pair to load both pools
+# Another terminal:
+just web mutinynet local
+# Open http://127.0.0.1:5173
+```
 
-This interface and the reusable taker SDK are planned work, not implemented UI.
+For local regtest, use `just setup`, `just start`, and `just web`. The browser
+wallet is separate from the CLI wallet: create one and fund its Receive address,
+or explicitly import an existing Arkade private key through the wallet dialog.
+The server never reads or serves `.taker/private-key`. Browser keys are encrypted
+with the chosen password in local storage; download the encrypted backup and keep
+the password. Passwords accept 1–256 characters. Wallet state uses IndexedDB;
+swap progress is stored locally before funding/execution and survives reloads.
+After an interruption, Activity can check status, resume a known funded swap,
+or return unspent funds through the owner leaf. An uncertain funding outcome
+blocks a second payment and requires wallet/chain inspection. Do not clear browser
+storage while an offer is funded: encrypted key backups do not include swap records.
+
+`packages/taker-sdk` exports `TakerClient`, `SavedSwap`, `SwapStore`, `parseAmount`
+and `formatAmount`. Both the CLI and UI use it. The SDK accepts an Arkade wallet,
+optional refund signer and async persistence adapter; it has no Node filesystem,
+environment variable or CLI-key dependency. `quote(assetId, atomicAmount, direction)`
+uses `token-to-btc` by default or `btc-to-token` for BTC purchases. In reverse mode,
+the requested amount is sats, excluding the extra 330-sat token carrier. All amounts
+use decimal strings / bigint. Quote signatures, direction, terms and the derived
+funding address are verified locally before funding. Execution is serialized per
+swap; the UI also locks wallet operations across tabs.
+
+The browser calls Striker for all quotes, execution and status. Same-origin fixed
+proxies forward chain operations to Arkade; there is no browser–maker connection.
+Only Emulator public info is proxied; its signing endpoint remains service-side.
+The Vite server loads public network/profile settings and asset ID from the chosen
+`.taker` configuration. Wallets need a secure browser context: localhost or HTTPS.
+For private network previews, configure `WEB_HOST`, `WEB_ALLOWED_HOSTS`,
+`WEB_TLS_CERT`, `WEB_TLS_KEY` and optionally `WEB_PORT` (default 5173).
+
+To configure a genuine USDt market, set `WEB_ASSET_ID`, `WEB_ASSET_SYMBOL=USDt`,
+`WEB_ASSET_NAME` and `WEB_ASSET_DECIMALS` to that deployment's verified asset
+metadata, and fund/configure maker pools for that exact asset ID. A ticker alone
+is not an asset identity. Demo setup mints POC, never genuine USDt. Build with the
+same public settings: `npm run build --workspace @satora/web`. Deployment must
+serve the generated `config.json` plus the fixed `/api/striker`, `/api/ark`,
+`/api/esplora` and read-only `/api/emulator/v1/info` proxies over HTTPS; a static
+HTML host alone is insufficient. This remains a test-network PoC wallet.
 
 ## Wire format and Rust port
 
@@ -413,6 +451,15 @@ The signed message is the concatenation of:
 | Epoch | 8-byte unsigned LE, 0..2^63-1 |
 | Deadline | 8-byte unsigned LE Unix seconds, 0..2^63-1 |
 
+Reverse quotes use the same fixed widths under domain `striker/quote/v1\0`.
+The market token field identifies the offered token, X is token units received,
+and Y is BTC sats paid. This separates reverse signatures from v0 signatures
+while keeping existing v0 forward deposits and vectors unchanged. The reverse
+maker predicate preserves input token quantity minus X in output 1 with its BTC
+carrier unchanged, pays X tokens to output 0, and pays Y sats to output 2. The
+user predicate enforces at least X tokens at its own output 0 destination, with
+a 330-sat carrier. Reverse funding is exactly Y + 330 sats.
+
 BIP340 signs SHA256 of that whole message. Fixed widths avoid concatenation
 ambiguity, and the integer cap aligns positive u64 LE with the VM's fixed-width
 sign-magnitude integers. Asset introspection takes the txid in reversed byte
@@ -427,17 +474,17 @@ Script VM is implemented here.
 
 ## Boundaries
 
-- One BTC maker deposit and one asset user offer per settlement. Striker selects
+- One maker deposit and one user offer per settlement, in either direction. Striker selects
   among several makers, but does not aggregate deposits, route multiple hops,
   or charge service fees. Maker prices are configured integer fractions.
 - The services support regtest and Mutinynet with in-memory orders and no durable
   execution recovery. Deposit tracking requires exactly one live tip at its
   script; full original-outpoint lineage traversal remains future work. Maker
-  cancellation/withdrawal and taker refund are tested at the covenant level;
-  their management commands are not yet exposed by these CLIs.
+  cancellation/withdrawal are tested at the covenant level; management commands
+  remain future work. Taker refunds are available in the SDK, CLI and browser.
 - The recursive BTC remainder must be at least 330 sats; final deposit exhaustion
-  is deferred. Asset liquidity deposits require separate asset balance accounting:
-  an asset quantity is **not** the VTXO's native BTC value.
+  is deferred. Token pools retain at least one atomic token unit and preserve
+  their BTC carrier. Token inventory and native BTC value are accounted separately.
 - Banco compatibility means composition with its reproduced **full-fill BTC
   predicate**, not compatibility with every Banco SDK, TLV format, or partial-fill
   contract. The PoC has its own tree and immediate cancellation behavior.

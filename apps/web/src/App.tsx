@@ -218,8 +218,12 @@ export default function App() {
   const receiveSymbol = reverse ? asset.symbol : "BTC";
   const sendDecimals = reverse ? 8 : asset.decimals;
   const receiveDecimals = reverse ? asset.decimals : 8;
-  const availableSend = reverse ? BigInt(Math.max(0, (balance?.available ?? 0) - 330)) : availableAsset;
-  const availableReceive = reverse ? availableAsset : BigInt(balance?.available ?? 0);
+  const availableSend = reverse
+    ? BigInt(Math.max(0, (balance?.available ?? 0) - 330))
+    : availableAsset;
+  const availableReceive = reverse
+    ? availableAsset
+    : BigInt(balance?.available ?? 0);
   let units = 0n,
     amountError = "";
   if (amount) {
@@ -306,7 +310,11 @@ export default function App() {
     const timer = setTimeout(() => {
       setQuoting(true);
       account.client
-        .quote(asset.id!, units.toString(), reverse ? "btc-to-token" : "token-to-btc")
+        .quote(
+          asset.id!,
+          units.toString(),
+          reverse ? "btc-to-token" : "token-to-btc",
+        )
         .then((result) => {
           if (!cancelled) setQuote(result);
         })
@@ -347,10 +355,14 @@ export default function App() {
     try {
       let encrypted = vault;
       if (!window.isSecureContext)
-        throw new Error("Open Striker on HTTPS or localhost to use your wallet.");
+        throw new Error(
+          "Open Striker on HTTPS or localhost to use your wallet.",
+        );
       if (!encrypted) {
         if (localStorage.getItem(vaultStorageKey))
-          throw new Error("The saved wallet could not be read. Preserve its browser data and restore your encrypted backup before creating another wallet.");
+          throw new Error(
+            "The saved wallet could not be read. Preserve its browser data and restore your encrypted backup before creating another wallet.",
+          );
         if (password !== confirmation)
           throw new Error("Your passwords do not match.");
         if (walletMode === "import" && !importKey.trim())
@@ -575,10 +587,11 @@ export default function App() {
         <section className="hero" aria-labelledby="hero-title">
           <div className="eyebrow">
             <span />
-            THE SHORTEST WAY TO BITCOIN
+            YOUR NEXT MOVE, ON ARKADE
           </div>
           <h1 id="hero-title">
-            {reverse ? "Bitcoin" : asset.symbol} to <em>{reverse ? `${asset.symbol}.` : "Bitcoin."}</em>
+            {reverse ? "Bitcoin" : asset.symbol} to{" "}
+            <em>{reverse ? `${asset.symbol}.` : "Bitcoin."}</em>
           </h1>
           <p>One swap. All on Arkade. Always your wallet.</p>
         </section>
@@ -587,7 +600,9 @@ export default function App() {
             <div className="amount-card send-card">
               <div className="card-topline">
                 <label htmlFor="send-amount">You send</label>
-                {asset.demo && !reverse && <span className="demo-badge">DEMO ASSET</span>}
+                {asset.demo && !reverse && (
+                  <span className="demo-badge">DEMO ASSET</span>
+                )}
               </div>
               <div className="amount-row">
                 <input
@@ -615,7 +630,10 @@ export default function App() {
                   Balance:{" "}
                   <b>
                     {account && balance
-                      ? formatAmount(availableSend, sendDecimals)
+                      ? formatAmount(
+                          reverse ? BigInt(balance.available) : availableAsset,
+                          sendDecimals,
+                        )
                       : "—"}
                   </b>{" "}
                   {sendSymbol}
@@ -633,13 +651,28 @@ export default function App() {
                 </div>
               </div>
             </div>
-            <button className="direction-arrow" aria-label="Switch swap direction" title="Switch swap direction" disabled={busy || !!pending} onClick={() => { setReverse(value => !value); setAmount(""); setQuote(null); setQuoteError(""); }}>
-              <Icon><path d="M8 3v18m-4-4 4 4 4-4M16 21V3m-4 4 4-4 4 4" /></Icon>
+            <button
+              className="direction-arrow"
+              aria-label="Switch swap direction"
+              title="Switch swap direction"
+              disabled={busy || !!pending}
+              onClick={() => {
+                setReverse((value) => !value);
+                setAmount("");
+                setQuote(null);
+                setQuoteError("");
+              }}
+            >
+              <Icon>
+                <path d="M8 3v18m-4-4 4 4 4-4M16 21V3m-4 4 4-4 4 4" />
+              </Icon>
             </button>
             <div className="amount-card receive-card">
               <div className="card-topline">
                 <span>You receive</span>
-                {asset.demo && reverse && !quote && <span className="demo-badge">DEMO ASSET</span>}
+                {asset.demo && reverse && !quote && (
+                  <span className="demo-badge">DEMO ASSET</span>
+                )}
                 {quote && (
                   <span
                     className={`quote-clock ${expires < 10 ? "expiring" : ""}`}
@@ -676,13 +709,17 @@ export default function App() {
                 <span className="balance-text">
                   Balance:{" "}
                   <b>
-                    {balance ? formatAmount(availableReceive, receiveDecimals) : "—"}
+                    {balance
+                      ? formatAmount(availableReceive, receiveDecimals)
+                      : "—"}
                   </b>{" "}
                   {receiveSymbol}
                 </span>
                 {quote && (
                   <span className="sats-label">
-                    {reverse ? `${formatAmount(receive, asset.decimals)} ${asset.symbol}` : `${receive.toLocaleString()} sats`}
+                    {reverse
+                      ? `${formatAmount(receive, asset.decimals)} ${asset.symbol}`
+                      : `${receive.toLocaleString()} sats`}
                   </span>
                 )}
               </div>
@@ -716,7 +753,9 @@ export default function App() {
                   <span>330 sats</span>
                 </div>
                 <p>
-                  {reverse ? "The 330 sats carrier stays with the tokens you receive in your wallet." : "The carrier travels with your token payment to the maker. It comes from your BTC balance."}
+                  {reverse
+                    ? "The 330 sats carrier stays with the tokens you receive in your wallet."
+                    : "The carrier travels with your token payment to the maker. It comes from your BTC balance."}
                 </p>
               </div>
             )}
@@ -1073,16 +1112,28 @@ export default function App() {
                   onClick={() => inspect(swap)}
                 >
                   <span className="history-coins">
-                    <Coin symbol={asset.symbol} small />
-                    <Coin bitcoin small />
+                    <Coin
+                      symbol={asset.symbol}
+                      bitcoin={swap.request.direction === "btc-to-token"}
+                      small
+                    />
+                    <Coin
+                      symbol={asset.symbol}
+                      bitcoin={swap.request.direction !== "btc-to-token"}
+                      small
+                    />
                   </span>
                   <span>
                     <strong>
                       {formatAmount(
                         BigInt(swap.request.giveAmount),
-                        swap.request.direction === "btc-to-token" ? 8 : asset.decimals,
+                        swap.request.direction === "btc-to-token"
+                          ? 8
+                          : asset.decimals,
                       )}{" "}
-                      {swap.request.direction === "btc-to-token" ? `BTC → ${asset.symbol}` : `${asset.symbol} → BTC`}
+                      {swap.request.direction === "btc-to-token"
+                        ? `BTC → ${asset.symbol}`
+                        : `${asset.symbol} → BTC`}
                     </strong>
                     <small>
                       {swap.createdAt
@@ -1122,10 +1173,7 @@ export default function App() {
               <span>
                 You send
                 <strong>
-                  {formatAmount(
-                    BigInt(quote.request.giveAmount),
-                    sendDecimals,
-                  )}{" "}
+                  {formatAmount(BigInt(quote.request.giveAmount), sendDecimals)}{" "}
                   {sendSymbol}
                 </strong>
               </span>
@@ -1135,7 +1183,10 @@ export default function App() {
               <Coin bitcoin={!reverse} symbol={receiveSymbol} />
               <span>
                 You receive
-                <strong>{formatAmount(receive, receiveDecimals, reverse)} {receiveSymbol}</strong>
+                <strong>
+                  {formatAmount(receive, receiveDecimals, reverse)}{" "}
+                  {receiveSymbol}
+                </strong>
               </span>
             </div>
           </div>
@@ -1219,18 +1270,26 @@ export default function App() {
               <span>
                 {formatAmount(
                   BigInt(displayedSwap.request.giveAmount),
-                  displayedSwap.request.direction === "btc-to-token" ? 8 : asset.decimals,
+                  displayedSwap.request.direction === "btc-to-token"
+                    ? 8
+                    : asset.decimals,
                 )}{" "}
-                {displayedSwap.request.direction === "btc-to-token" ? "BTC" : asset.symbol}
+                {displayedSwap.request.direction === "btc-to-token"
+                  ? "BTC"
+                  : asset.symbol}
               </span>
               <span>→</span>
               <strong>
                 {formatAmount(
                   BigInt(displayedSwap.response.offer.quote.x),
-                  displayedSwap.request.direction === "btc-to-token" ? asset.decimals : 8,
+                  displayedSwap.request.direction === "btc-to-token"
+                    ? asset.decimals
+                    : 8,
                   displayedSwap.request.direction === "btc-to-token",
                 )}{" "}
-                {displayedSwap.request.direction === "btc-to-token" ? asset.symbol : "BTC"}
+                {displayedSwap.request.direction === "btc-to-token"
+                  ? asset.symbol
+                  : "BTC"}
               </strong>
             </div>
           )}
@@ -1306,7 +1365,7 @@ export default function App() {
                     className="text-button refund-button"
                     onClick={() => void refund()}
                   >
-                    Return unspent tokens to wallet
+                    Return unspent funds to wallet
                   </button>
                 </>
               )}

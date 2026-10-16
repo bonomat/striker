@@ -12,9 +12,15 @@ import { loadConfig, networkSettings, assetId } from "@satora/striker-protocol";
 import type { AppConfig } from "./src/config.js";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-process.env.EMULATOR_CONFIG_DIR = path.resolve(root, process.env.EMULATOR_CONFIG_DIR ?? ".emulator");
+process.env.EMULATOR_CONFIG_DIR = path.resolve(
+  root,
+  process.env.EMULATOR_CONFIG_DIR ?? ".emulator",
+);
 const settings = networkSettings(),
-  taker = loadConfig("taker", path.resolve(root, process.env.TAKER_CONFIG_DIR ?? ".taker"));
+  taker = loadConfig(
+    "taker",
+    path.resolve(root, process.env.TAKER_CONFIG_DIR ?? ".taker"),
+  );
 const configured = process.env.WEB_ASSET_ID ?? taker.config.assetId;
 const symbol = process.env.WEB_ASSET_SYMBOL ?? "POC";
 const decimals = Number(process.env.WEB_ASSET_DECIMALS ?? "0");
@@ -34,8 +40,11 @@ const json = JSON.stringify(config);
 const publicConfig = (): Plugin => {
   const mount = (server: ViteDevServer | PreviewServer) => {
     server.middlewares.use((req, res, next) => {
-      if (req.url?.startsWith("/api/emulator") &&
-          (req.method !== "GET" || req.url.split("?")[0] !== "/api/emulator/v1/info")) {
+      if (
+        req.url?.startsWith("/api/emulator") &&
+        (req.method !== "GET" ||
+          req.url.split("?")[0] !== "/api/emulator/v1/info")
+      ) {
         res.statusCode = 404;
         res.end("Not found");
         return;
