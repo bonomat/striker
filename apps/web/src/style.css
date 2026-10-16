@@ -653,58 +653,11 @@ button svg {
   border-radius: 50%;
   background: #bea46d;
 }
-.how-it-works {
-  margin: 80px auto 0;
-  max-width: 900px;
-  border-top: 1px solid var(--line);
-  padding: 35px 0 62px;
-}
-.how-heading {
-  text-align: center;
-}
 .tiny-label {
   font-size: 8px;
   letter-spacing: 1.8px;
   color: #9ba68b;
   font-weight: 550;
-}
-.how-heading h2 {
-  font-family: "Manrope", sans-serif;
-  font-size: 20px;
-  letter-spacing: -0.6px;
-  font-weight: 500;
-  margin: 11px 0 31px;
-  color: #6c775e;
-}
-.steps {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 35px;
-  padding: 0 20px;
-}
-.steps > div {
-  position: relative;
-}
-.step-number {
-  font-size: 9px;
-  letter-spacing: 1px;
-  color: #aab49b;
-  font-weight: 500;
-}
-.steps h3 {
-  font-family: "Manrope", sans-serif;
-  font-size: 12px;
-  letter-spacing: -0.1px;
-  font-weight: 650;
-  margin: 12px 0 8px;
-  color: #778369;
-}
-.steps p {
-  font-size: 11px;
-  line-height: 1.75;
-  color: #a0a793;
-  max-width: 220px;
-  margin: 0;
 }
 .footer {
   border-top: 1px solid var(--line);
@@ -729,13 +682,9 @@ button svg {
   font-size: 10px;
 }
 .arkade-mark {
-  font-family: "Manrope", sans-serif;
-  font-style: italic;
-  font-weight: 800;
-  display: inline-grid;
-  place-items: center;
-  color: #a2bc7a;
-  font-size: 19px;
+  display: block;
+  width: 32px;
+  height: 32px;
 }
 .footer-separator {
   width: 1px;
@@ -1442,9 +1391,6 @@ button svg {
   .hero {
     padding-top: 91px;
   }
-  .how-it-works {
-    margin-top: 95px;
-  }
   .header {
     height: 112px;
   }
@@ -1638,35 +1584,9 @@ button svg {
     width: 13px;
     height: 13px;
   }
-  .how-it-works {
-    margin-top: 51px;
-    padding-top: 29px;
-    padding-bottom: 37px;
-  }
-  .how-heading h2 {
-    font-size: 17px;
-    letter-spacing: -0.5px;
-    margin-bottom: 27px;
-  }
   .tiny-label {
     font-size: 7px;
     letter-spacing: 1.5px;
-  }
-  .steps {
-    gap: 20px;
-    padding: 0 8px;
-  }
-  .steps h3 {
-    font-size: 10px;
-    line-height: 1.6;
-    margin: 10px 0 5px;
-  }
-  .steps p {
-    font-size: 9px;
-    line-height: 1.7;
-  }
-  .step-number {
-    font-size: 8px;
   }
   .footer {
     min-height: 85px;

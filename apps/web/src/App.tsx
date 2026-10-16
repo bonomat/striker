@@ -1,3 +1,4 @@
+import arkadeIcon from "./assets/arkade-icon.svg";
 import {
   useCallback,
   useEffect,
@@ -27,6 +28,7 @@ import "./style.css";
 import { WalletBalances } from "./WalletBalances.js";
 import { WalletAddress } from "./WalletAddress.js";
 import { SwapDetails } from "./SwapDetails.js";
+import { HowItWorks } from "./HowItWorks.js";
 import { walletSession } from "./wallet-session.js";
 
 const short = (text: string) => `${text.slice(0, 9)}…${text.slice(-6)}`;
@@ -953,39 +955,13 @@ export default function App() {
             </div>
           )}
         </section>
-        <section className="how-it-works" aria-label="How Striker works">
-          <div className="how-heading">
-            <span className="tiny-label">LESS FRICTION. MORE BITCOIN.</span>
-            <h2>A better way to make your move.</h2>
-          </div>
-          <div className="steps">
-            <div>
-              <span className="step-number">01</span>
-              <h3>Bring your assets</h3>
-              <p>Connect your wallet and choose how much you want to swap.</p>
-            </div>
-            <div>
-              <span className="step-number">02</span>
-              <h3>Get your best quote</h3>
-              <p>
-                Striker finds a signed offer from available maker liquidity.
-              </p>
-            </div>
-            <div>
-              <span className="step-number">03</span>
-              <h3>Make it bitcoin</h3>
-              <p>
-                Your tokens and BTC change hands together, in one atomic swap.
-              </p>
-            </div>
-          </div>
-        </section>
+        <HowItWorks assetSymbol={asset.symbol} bitcoinToToken={reverse} />
       </main>
       <footer className="footer">
         <span>Built for the way bitcoin moves.</span>
         <div>
           <span className="footer-arkade">
-            <span className="arkade-mark">a</span>Powered by Arkade
+            <img className="arkade-mark" src={arkadeIcon} alt="" aria-hidden="true" />Powered by Arkade
           </span>
           <span className="footer-separator" />
           {config?.network === "regtest" ? "Regtest" : "Mutinynet"} · Test
