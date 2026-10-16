@@ -13,18 +13,23 @@ For a local demo, run `just setup`, then `just start`. In another terminal,
 `just taker` requests and executes a swap through Striker. Maker and taker keys
 persist in ignored `.maker/` and `.taker/` directories across restarts; service
 settings live in `.striker/`. For Mutinynet, use `just setup mutinynet`,
-`just start mutinynet`, then `just taker 2000 mutinynet`. Keys are shared;
+`just start mutinynet`, then `just taker 1 mutinynet`. Keys are shared;
 network state is separate. Fund both Mutinynet wallets before setup; it checks
 the balances before issuing the demo token and never calls the public faucet. See [Mutinynet setup and Arkade swap UI](./POC.md#mutinynet-setup).
 Use `just setup mutinynet local`, `just start mutinynet local`, and
-`just taker 100 mutinynet local` to test against a local Emulator with full logs
+`just taker 1 mutinynet local` to test against a local Emulator with full logs
 while settling on Mutinynet. Run `just web mutinynet local` for the browser interface
-at `http://127.0.0.1:5173`. It swaps BTC ↔ POC through the shared taker SDK, with an
+at `http://127.0.0.1:5173`. It swaps BTC ↔ demo USD through the shared taker SDK, with an
 encrypted browser wallet, live quotes, activity and refunds. Rerun setup and restart
-older services to provision/load the token pool for BTC → POC. `just --list` shows
+older services to provision/load the token pool for BTC → demo USD. `just --list` shows
 the other commands. Existing CLI funds at the previous address need an explicit
 `npm run taker -- move-legacy` before swapping; browser wallets offer the same migration
 in the wallet dialog. New receive addresses deposit directly into the reusable taker covenant.
+
+Mutinynet makers use Binance BTC/USDT bid/ask prices as a dollar proxy for new quotes.
+The existing demo token is displayed as USD with 0 decimals; its asset ID is unchanged,
+and issued metadata may still say POC. It is not backed USD or genuine USDt.
+Regtest retains deterministic static prices. See [live pricing configuration](./POC.md#live-demo-usd-pricing).
 
 The [GitHub Pages workflow](./.github/workflows/pages.yml) deploys the frontend on
 pushes to `main`. See [Pages configuration](./POC.md#github-pages-deployment) for

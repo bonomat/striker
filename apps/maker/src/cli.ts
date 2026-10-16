@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { asset } from '@arkade-os/sdk';
 import { schnorr } from '@noble/curves/secp256k1.js';
+import { BinancePricing } from './pricing.js';
 import { args, assetId, connectChain, createWallet, decimal, depositJSON, epochOf, epochPacket,
   fundedCoin, hex, HttpError, listen, main, makerContract, nowSeconds, object, offerJSON,
   parseDeposit, parseMarketRequest, port, readJSON, required, secretKey, signQuote, writeJSON,
@@ -16,7 +17,10 @@ maker serve [--state FILE] [--host 127.0.0.1] [--port 4101] [--ttl-seconds 120]
 Serve loads deposit.json and reverse-deposit.json; --reverse-state overrides the token pool path.
 --config-dir DIR defaults to .maker (or MAKER_CONFIG_DIR).
 The private key is generated once in DIR/private-key. MAKER_PRIVATE_KEY imports an existing key.
-Rates are BTC sats per asset atomic unit, as an integer fraction.\n--network regtest|mutinynet (or STRIKER_NETWORK). Keys are shared; state is per network.`;
+Rates are BTC sats per asset atomic unit, as an integer fraction.
+Set config.json pricing={source:"binance",assetId:"...",assetDecimals:0} for live BTCUSDT bid/ask pricing.
+Without pricing configuration the saved static deposit rates are used (regtest compatibility).
+--network regtest|mutinynet (or STRIKER_NETWORK). Keys are shared; state is per network.`;
 
 function loadState(file: string, chain: Chain, key: Uint8Array) {
   const state = object(readJSON(file));
@@ -50,9 +54,16 @@ main(async () => {
     if (!states.length) throw new Error('Create maker liquidity before serving');
     const ttl = Number(flags['ttl-seconds'] ?? local.config.ttlSeconds);
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 300) throw new Error('TTL must be 1..300 seconds');
+    const pricing = local.config.pricing === undefined ? { source: 'static' } : object(local.config.pricing);
+    if (pricing.source !== 'static' && pricing.source !== 'binance') throw new Error('Unknown maker price source');
+    const livePricing = pricing.source === 'binance' ? new BinancePricing(Number(pricing.assetDecimals)) : undefined;
+    if (livePricing && (typeof pricing.assetDecimals !== 'number' ||
+        states.some(s => hex(s.deposit.wantAsset) !== assetId(pricing.assetId))))
+      throw new Error('Binance pricing must specify the decimals and exact asset ID of all loaded pools');
     await listen('maker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4101),
       async (method, path, body) => {
-        if (method === 'GET' && path === '/health') return { service: 'maker', ok: true };
+        if (method === 'GET' && path === '/health') return { service: 'maker', ok: true,
+          pricing: livePricing?.status() ?? { source: 'static' } };
         if (method !== 'POST' || path !== '/v1/quotes') throw new HttpError(404, 'Not found');
         const request = parseMarketRequest(body);
         const state = states.find(s => parseDirection(s.deposit.direction) === parseDirection(request.direction) && hex(s.deposit.wantAsset) === request.assetId);
@@ -63,7 +74,11 @@ main(async () => {
         if (coins.length !== 1) throw new HttpError(503, 'No unambiguous live deposit');
         const coin = coins[0]!;
         const y = BigInt(request.giveAmount), reverse = state.deposit.direction === 'btc-to-token';
-        const x = reverse ? y * state.denominator / state.numerator : y * state.numerator / state.denominator;
+        let x: bigint;
+        if (livePricing) {
+          try { x = await livePricing.output(y, reverse ? 'btc-to-token' : 'token-to-btc'); }
+          catch { throw new HttpError(503, 'Live price feed unavailable; no quote issued'); }
+        } else x = reverse ? y * state.denominator / state.numerator : y * state.numerator / state.denominator;
         const held = BigInt(coin.assets?.find(a => a.assetId === request.assetId)?.amount ?? 0);
         if (reverse ? (y < 330n || x <= 0n || held <= x || coin.assets?.length !== 1) :
             (x < 330n || BigInt(coin.value) - x < 330n)) throw new HttpError(422, 'Trade outside available liquidity');

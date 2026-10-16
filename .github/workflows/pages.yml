@@ -39,8 +39,9 @@ jobs:
           WEB_BASE_PATH: ${{ steps.pages.outputs.base_path }}/
           WEB_STRIKER_URL: ${{ vars.WEB_STRIKER_URL }}
           WEB_ASSET_ID: ${{ vars.WEB_ASSET_ID }}
-          WEB_ASSET_SYMBOL: ${{ vars.WEB_ASSET_SYMBOL || 'POC' }}
-          WEB_ASSET_NAME: ${{ vars.WEB_ASSET_NAME || 'Striker test asset' }}
+          # Migrate the existing demo's display name without changing its asset ID or decimals.
+          WEB_ASSET_SYMBOL: ${{ vars.WEB_ASSET_SYMBOL == 'POC' && 'USD' || vars.WEB_ASSET_SYMBOL || 'USD' }}
+          WEB_ASSET_NAME: ${{ vars.WEB_ASSET_NAME || 'Striker demo USD' }}
           WEB_ASSET_DECIMALS: ${{ vars.WEB_ASSET_DECIMALS || '0' }}
           STRIKER_NETWORK: mutinynet
           STRIKER_EMULATOR: hosted

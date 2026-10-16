@@ -67,7 +67,7 @@ main(async () => {
     if (command === 'issue') {
       const amount = decimal(flags.amount, '--amount', true);
       const result = await actor.wallet.assetManager.issue({ amount,
-        metadata: { name: 'Striker test asset', ticker: 'POC', decimals: 0 } });
+        metadata: { name: 'Striker demo USD', ticker: 'USD', decimals: 0 } });
       await waitFor(async () => (await actor.wallet.getVtxos()).some(v =>
         v.assets?.some(a => a.assetId === result.assetId)) ? true : undefined, 'test asset issuance');
       console.log(JSON.stringify({ assetId: result.assetId, amount: amount.toString() }));

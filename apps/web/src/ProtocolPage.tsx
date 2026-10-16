@@ -36,7 +36,7 @@ export function ProtocolPage() {
         <li><span>02 / AUTHORIZE</span><h3>Wallet → Striker</h3><p>The wallet selects existing coins and signs the accepted terms. It sends the authorization, never the private key.</p><code>POST /v2/swaps</code></li>
         <li><span>03 / SETTLE</span><h3>Striker → Arkade</h3><p>Striker finds the live maker coin, builds the transaction, and submits it through the Emulator and arkd.</p><code>Both sides paid atomically</code></li>
       </ol>
-      <p>Maker and taker never communicate directly. Quotes, execution requests and status go through Striker. The maker can go offline after signing its quote.</p>
+      <p>Maker and taker never communicate directly. Quotes, execution requests and status go through Striker. The maker can go offline after signing its quote. A quote keeps its signed price until expiry; later market moves affect newly issued quotes.</p>
     </Section>
 
     <Section number="03" title="The maker covenant protects the pool.">
@@ -99,18 +99,18 @@ require output[0].receivedAsset >= minimumReceive`}</Code>
     </Section>
 
     <Section number="05" title="What actually goes into the transaction?">
-      <p>For a BTC → POC swap of 500 sats for 100 POC, suppose your input already holds 27,840 sats and 300 POC. The current layout produces:</p>
+      <p>For an illustrative BTC → USD swap at 100,000 USD per BTC, 1 USD costs 1,000 sats. Suppose your input already holds 27,840 sats and 300 demo USD. The current layout produces:</p>
       <div className="protocol-table-wrap"><table>
         <thead><tr><th>Output</th><th>Purpose</th><th>Receives</th></tr></thead>
         <tbody>
-          <tr><td>0</td><td>Your swap receipt</td><td>330 sats + 100 POC</td></tr>
+          <tr><td>0</td><td>Your swap receipt</td><td>330 sats + 1 USD</td></tr>
           <tr><td>1</td><td>Remaining maker liquidity</td><td>Same maker covenant</td></tr>
-          <tr><td>2</td><td>Maker payment</td><td>500 sats</td></tr>
-          <tr><td>3</td><td>Your change</td><td>27,010 sats + 300 POC</td></tr>
+          <tr><td>2</td><td>Maker payment</td><td>1,000 sats</td></tr>
+          <tr><td>3</td><td>Your change</td><td>26,510 sats + 300 USD</td></tr>
           <tr><td>4 + 5</td><td>Protocol packet + anchor</td><td>Asset allocations, covenant witnesses and metadata; anchor</td></tr>
         </tbody>
       </table></div>
-      <p>You finish with 27,340 sats and 400 POC: a net exchange of 500 sats for 100 POC. Outputs 0 and 3 share your wallet address but stay separate under the current covenant rules. With multiple taker inputs, each gets its own change output.</p>
+      <p>You finish with 26,840 sats and 301 USD: a net exchange of 1,000 sats for 1 demo USD. Actual quotes use the maker’s live rate, not this illustrative price. Outputs 0 and 3 share your wallet address but stay separate under the current covenant rules. With multiple taker inputs, each gets its own change output.</p>
       <a className="protocol-source-link" href={`${source}packages/protocol/src/intent-settlement.ts`} target="_blank" rel="noopener noreferrer">Inspect the transaction builder ↗</a>
     </Section>
 
@@ -131,7 +131,7 @@ withdrawOrCancel = owner.sign(selfSpendOrWithdrawal)`}</Code>
     <aside className="protocol-limits" aria-labelledby="protocol-limits-title">
       <span className="tiny-label">CURRENT IMPLEMENTATION</span>
       <h2 id="protocol-limits-title">An experiment you can inspect.</h2>
-      <p>This runs on Mutinynet with the demo token POC, priced statically at 5 sats per atomic unit. POC is not USDt. Each swap uses one maker and up to four taker inputs. Striker orders are held in memory; durable execution recovery, automatic rebalancing and unilateral exits remain future work.</p>
+      <p>This runs on Mutinynet with a demo token displayed as USD. The existing token ID and 0 decimals are preserved; its original issued metadata may still say POC. New quotes use Binance BTC/USDT bid/ask prices as a dollar proxy, treating 1 USDT as 1 demo USD. This token is not backed by dollars and is not genuine USDt. Each swap uses one maker and up to four taker inputs. Striker orders are held in memory; durable execution recovery, automatic rebalancing and unilateral exits remain future work.</p>
       <div><a href="https://github.com/bonomat/striker" target="_blank" rel="noopener noreferrer">Explore the repository ↗</a><a href="#/">Back to swapping →</a></div>
     </aside>
   </article>;

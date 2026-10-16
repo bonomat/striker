@@ -89,6 +89,8 @@ async function setup() {
         '--rate-numerator', '5', '--rate-denominator', '1']);
     }
     writeJSON(local.taker.file, { ...local.taker.config, assetId });
+    if (network === 'mutinynet' && local.maker.config.pricing === undefined)
+      writeJSON(local.maker.file, { ...local.maker.config, pricing: { source: 'binance', assetId, assetDecimals: 0 } });
     const reverseFile = path.join(local.maker.directory, 'reverse-deposit.json');
     if (!existsSync(reverseFile)) {
       const tokens = 2000n;

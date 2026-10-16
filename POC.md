@@ -540,7 +540,7 @@ In the target repository:
    |---|---|
    | `WEB_STRIKER_URL` | Required: public HTTPS Striker endpoint, e.g. `https://striker.example.com` |
    | `WEB_ASSET_ID` | Required: exact 68-character asset ID supported by the maker pools |
-   | `WEB_ASSET_SYMBOL` | Optional; default `POC` |
+   | `WEB_ASSET_SYMBOL` | Optional; default `USD` (demo) |
    | `WEB_ASSET_NAME` | Optional; default `Striker test asset` |
    | `WEB_ASSET_DECIMALS` | Optional; default `0` |
    | `ARK_URL` | Optional; default `https://mutinynet.arkade.sh` |
@@ -629,7 +629,7 @@ Script VM is implemented here.
 
 - One maker deposit and up to four taker covenant inputs per intent settlement, in either direction. Striker selects
   among several makers, but does not aggregate deposits, route multiple hops,
-  or charge service fees. Maker prices are configured integer fractions.
+  or charge service fees. Maker prices use a configured live feed or static integer fractions.
 - The services support regtest and Mutinynet with in-memory orders and no durable
   execution recovery. Deposit tracking requires exactly one live tip at its
   script; full original-outpoint lineage traversal remains future work. Maker
@@ -654,3 +654,60 @@ Script VM is implemented here.
 References: [Arkade regtest](https://github.com/ArkLabsHQ/arkade-regtest),
 [Banco predicate](https://github.com/arkade-os/banco/blob/master/src/offer.ts),
 [Emulator](https://github.com/arkade-os/emulator).
+
+
+## Live demo USD pricing
+
+The `poc-intent-v1-working` tag preserves the last working POC/static-price release.
+The existing Mutinynet asset ID and 0 decimals are retained. Its display symbol is now
+USD, so one atomic unit is one demo USD; original issued metadata can still say POC.
+It is neither dollar-backed nor genuine USDt. Renaming does not issue a new asset or
+change existing balances. Newly issued setup tokens use USD metadata.
+
+Mutinynet setup enables this maker profile configuration when no pricing mode exists:
+
+```json
+{
+  "pricing": {
+    "source": "binance",
+    "assetId": "9571dc4fdbfb607452b78e9fd0d904b5d8b8516c1b85745b997e67d35dc61a070000",
+    "assetDecimals": 0
+  }
+}
+```
+
+Merge this into `.maker/mutinynet/local-emulator/config.json` (or the active profile),
+then restart the maker. Decimals must match the frontend; asset ID must match every
+loaded maker pool. This changes pricing only, so existing covenants and liquidity
+remain valid. Regtest defaults to the saved static rates; `pricing.source: "static"`
+also explicitly selects them. Earlier static-price examples in this document describe
+regtest and the tagged POC deployment. They are not the current Mutinynet market rate.
+
+The maker fetches Binance's public, keyless market-data endpoint:
+`https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=BTCUSDT`.
+BTC sellers receive USD at the bid; USD sellers buy BTC at the ask. USDT is treated
+as a 1:1 dollar proxy for this demo. All calculations use exact integer fractions
+and round the received amount down. For price `P` and `d` asset decimals:
+
+```text
+BTC -> USD: floor(sats * bid * 10^d / 100_000_000)
+USD -> BTC: floor(atomicUnits * 100_000_000 / (ask * 10^d))
+```
+
+Samples are reused for less than 10 seconds, measured locally from request start.
+The HTTP timeout is 5 seconds. Missing, malformed, crossed, expired or failed
+responses stop new quotes; no stale or static fallback is used. Binance bookTicker
+does not provide a source timestamp, so this is a local fetch-age limit, not proof
+of exchange event freshness. `/health` exposes the pricing mode and sample freshness.
+Already signed quotes retain their fixed price until their signed deadline.
+
+With whole demo USD units, small BTC amounts may round to zero and be rejected.
+At roughly 100,000 USD/BTC, start with about 2,000 sats or 1 USD; maker liquidity
+and the existing 330-sat receipt/change constraints still apply. No funds are
+automatically deposited or fetched from a faucet.
+
+Pages now defaults to USD and treats the legacy `WEB_ASSET_SYMBOL=POC` repository
+variable as USD for the display-name migration. The asset ID and decimals variables
+remain unchanged. Set `WEB_ASSET_SYMBOL=USD` and `WEB_ASSET_NAME=Striker demo USD`
+to make the repository variables explicit. The current token always remains marked
+as a demo asset in the interface.

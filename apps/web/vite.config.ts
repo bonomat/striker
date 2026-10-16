@@ -54,7 +54,7 @@ if (staticSite) {
       throw new Error(`${name} cannot be a loopback endpoint on a static site`);
   }
 }
-const symbol = process.env.WEB_ASSET_SYMBOL ?? "POC";
+const symbol = process.env.WEB_ASSET_SYMBOL ?? "USD";
 const decimals = Number(process.env.WEB_ASSET_DECIMALS ?? "0");
 if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18)
   throw new Error("Invalid WEB_ASSET_DECIMALS");
@@ -64,9 +64,9 @@ const config: AppConfig = {
   asset: {
     id: typeof configured === "string" ? assetId(configured) : null,
     symbol,
-    name: process.env.WEB_ASSET_NAME ?? "Striker test asset",
+    name: process.env.WEB_ASSET_NAME ?? "Striker demo USD",
     decimals,
-    demo: symbol === "POC",
+    demo: symbol === "POC" || symbol === "USD",
   },
 };
 const json = JSON.stringify(config);
