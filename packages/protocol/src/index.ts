@@ -7,3 +7,4 @@ export * from './http.js';
 export * from './cli.js';
 export * from './config.js';
 export * from './network.js';
+export * from './encoding.js';

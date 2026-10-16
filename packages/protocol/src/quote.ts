@@ -23,6 +23,8 @@ export interface Quote {
   deadline: bigint; // Unix seconds; exclusive upper bound at VM validation time.
 }
 
+export const equalBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((byte, i) => byte === b[i]);
+
 export function concat(...parts: Uint8Array[]): Uint8Array {
   const result = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let offset = 0;
@@ -55,7 +57,7 @@ export function encodeQuote(d: Deposit, q: Quote): Uint8Array {
 }
 
 export function signQuote(d: Deposit, q: Quote, secret: Uint8Array): Uint8Array {
-  if (Buffer.compare(schnorr.getPublicKey(secret), d.makerPublicKey) !== 0)
+  if (!equalBytes(schnorr.getPublicKey(secret), d.makerPublicKey))
     throw new Error('Signing key does not match deposit');
   // Fixed auxiliary randomness is for reproducible PoC vectors only.
   return schnorr.sign(sha256(encodeQuote(d, q)), secret, new Uint8Array(32));
@@ -63,7 +65,7 @@ export function signQuote(d: Deposit, q: Quote, secret: Uint8Array): Uint8Array 
 
 export function verifyQuote(d: Deposit, message: Uint8Array, signature: Uint8Array): boolean {
   const prefix = quotePrefix(d);
-  if (message.length !== MESSAGE_LENGTH || Buffer.compare(message.subarray(0, prefix.length), prefix))
+  if (message.length !== MESSAGE_LENGTH || !equalBytes(message.subarray(0, prefix.length), prefix))
     return false;
   const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
   const values = Object.values(OFFSETS).map(offset => view.getBigUint64(offset, true));

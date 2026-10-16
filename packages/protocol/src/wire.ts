@@ -1,7 +1,7 @@
 import { asset } from '@arkade-os/sdk';
 import { encodeQuote, MAX_INT, validateDeposit, verifyQuote, type Deposit, type Quote } from './quote.js';
 
-export const hex = (value: Uint8Array) => Buffer.from(value).toString('hex');
+export const hex = (value: Uint8Array) => Array.from(value, byte => byte.toString(16).padStart(2, '0')).join('');
 export function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected JSON object');
   return value as Record<string, unknown>;
@@ -13,7 +13,7 @@ export function string(value: unknown, field: string): string {
 export function bytes(value: unknown, length: number, field: string): Uint8Array {
   const encoded = string(value, field);
   if (!new RegExp(`^[0-9a-f]{${length * 2}}$`).test(encoded)) throw new Error(`Invalid ${field}`);
-  return Uint8Array.from(Buffer.from(encoded, 'hex'));
+  return Uint8Array.from(encoded.match(/../g)!, byte => Number.parseInt(byte, 16));
 }
 export function decimal(value: unknown, field: string, positive = false): bigint {
   const encoded = string(value, field);
