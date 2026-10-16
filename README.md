@@ -15,7 +15,7 @@ persist in ignored `.maker/` and `.taker/` directories across restarts; service
 settings live in `.striker/`. For Mutinynet, use `just setup mutinynet`,
 `just start mutinynet`, then `just taker 2000 mutinynet`. Keys are shared;
 network state is separate. Fund both Mutinynet wallets before setup; it checks
-the balances before issuing the demo token and never calls the public faucet. See [Mutinynet setup](./POC.md#mutinynet-setup).
+the balances before issuing the demo token and never calls the public faucet. See [Mutinynet setup and planned Arkade swap UI](./POC.md#mutinynet-setup).
 Use `just setup mutinynet local`, `just start mutinynet local`, and
 `just taker 100 mutinynet local` to test against a local Emulator with full logs
 while settling on Mutinynet. `just --list` shows the other commands.

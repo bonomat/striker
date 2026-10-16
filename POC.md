@@ -363,6 +363,32 @@ this workaround applies to the local profile. Failed diagnostic orders are
 preserved in the local quote directory for inspection; they must not be blindly
 retried or re-funded based only on a client error.
 
+## Planned swap interface and taker SDK
+
+The first web interface will swap **USDt on Arkade → BTC on Arkade**. Follow the
+[saved visual reference](./docs/swap-reference.png): amount cards, balance, percentage buttons, quoted receive
+amount, fee details and primary action. Both cards show Arkade; there are no
+Lightning, on-chain, Arbitrum or bridge destinations in this scope.
+
+The frontend will use a reusable TypeScript taker SDK, shared with the taker CLI.
+Extract quote verification, local covenant/address derivation, funding, execution
+and status handling from the CLI into that library before adding the UI. The
+SDK takes an Arkade wallet/signer and an application-provided persistence adapter;
+it must not depend on Node files, environment variables or CLI key files. The
+browser owns its wallet keys. Persist funded-swap progress before requesting
+execution, and support resuming from a reload. Keep decimal amounts as strings
+or bigint; convert displayed USDt using the selected asset's actual decimals.
+
+Quotes and execution requests go exclusively through Striker. Only wallet
+funding and chain queries talk directly to Arkade. The frontend never contacts
+makers. Use a configured and verified **asset ID**, not a ticker match, to
+identify USDt. Demo setup issues POC; it does not issue genuine USDt. A real
+USDt market needs existing USDt on this Arkade deployment, a funded taker and a
+maker configured to price that asset. The current PoC implements only token →
+BTC; a reverse button must wait for BTC → token settlement support.
+
+This interface and the reusable taker SDK are planned work, not implemented UI.
+
 ## Wire format and Rust port
 
 `vectors/quote-v0.json` contains deterministic quote bytes, digest, signature,
