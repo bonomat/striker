@@ -14,9 +14,13 @@ default:
 install:
     npm ci
 
-# Build all three executables and the shared protocol.
+# Build the executables, taker SDK and web interface.
 build:
     npm run build
+
+# Start the browser swap interface; run just start in another terminal.
+web network=network emulator=emulator:
+    STRIKER_NETWORK="$1" STRIKER_EMULATOR="$2" npm run web
 
 # Generate local configuration and persistent maker/taker keys, without funding.
 init network=network emulator=emulator: build

@@ -10,6 +10,8 @@ test('browser wallet backup encrypts the key, authenticates metadata and rejects
   await assert.rejects(decryptWallet(vault, 'different password'), /Unable to unlock/);
   await assert.rejects(decryptWallet({ ...vault, publicKey: '02'.repeat(32) }, password), /Unable to unlock/);
   assert.throws(() => parseVault({ ...vault, ciphertext: 'corrupted' }), /encrypted key/);
-  await assert.rejects(encryptWallet('short', key), /10 and 256/);
+  const short = await encryptWallet('x', key);
+  assert.equal(Buffer.from(await decryptWallet(short, 'x')).toString('hex'), key);
+  await assert.rejects(encryptWallet('', key), /1 and 256/);
   await assert.rejects(encryptWallet(password, '00'.repeat(32)), /Invalid private key/);
 });

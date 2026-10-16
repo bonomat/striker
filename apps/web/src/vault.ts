@@ -9,8 +9,8 @@ export interface Vault {
 }
 const encoder = new TextEncoder();
 async function encryptionKey(password: string, salt: Uint8Array) {
-  if (password.length < 10 || password.length > 256)
-    throw new Error("Use a password between 10 and 256 characters.");
+  if (password.length < 1 || password.length > 256)
+    throw new Error("Use a password between 1 and 256 characters.");
   const material = await crypto.subtle.importKey(
     "raw",
     encoder.encode(password),

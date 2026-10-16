@@ -128,6 +128,7 @@ function Modal({
   }, []);
   return (
     <dialog
+      aria-label={title}
       className={`modal ${wide ? "modal-wide" : ""}`}
       ref={dialog}
       onCancel={(event) => {
@@ -337,7 +338,11 @@ export default function App() {
     setWalletError("");
     try {
       let encrypted = vault;
+      if (!window.isSecureContext)
+        throw new Error("Open Striker on HTTPS or localhost to use your wallet.");
       if (!encrypted) {
+        if (localStorage.getItem(vaultStorageKey))
+          throw new Error("The saved wallet could not be read. Preserve its browser data and restore your encrypted backup before creating another wallet.");
         if (password !== confirmation)
           throw new Error("Your passwords do not match.");
         if (walletMode === "import" && !importKey.trim())
@@ -929,10 +934,10 @@ export default function App() {
                   <input
                     type="password"
                     autoComplete={vault ? "current-password" : "new-password"}
-                    minLength={10}
+                    minLength={1}
                     maxLength={256}
                     placeholder={
-                      vault ? "Your wallet password" : "At least 10 characters"
+                      vault ? "Your wallet password" : "Choose a password"
                     }
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}

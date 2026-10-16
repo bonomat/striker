@@ -34,6 +34,12 @@ const json = JSON.stringify(config);
 const publicConfig = (): Plugin => {
   const mount = (server: ViteDevServer | PreviewServer) => {
     server.middlewares.use((req, res, next) => {
+      if (req.url?.startsWith("/api/emulator") &&
+          (req.method !== "GET" || req.url.split("?")[0] !== "/api/emulator/v1/info")) {
+        res.statusCode = 404;
+        res.end("Not found");
+        return;
+      }
       if (req.url?.split("?")[0] !== "/config.json") return next();
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Cache-Control", "no-store");
@@ -79,6 +85,7 @@ const https =
       }
     : undefined;
 const host = process.env.WEB_HOST ?? "127.0.0.1";
+const port = Number(process.env.WEB_PORT ?? "5173");
 const allowedHosts = process.env.WEB_ALLOWED_HOSTS?.split(",") ?? [];
 export default defineConfig({
   root: path.join(root, "apps/web"),
@@ -87,7 +94,7 @@ export default defineConfig({
     host,
     https,
     allowedHosts,
-    port: 5173,
+    port,
     strictPort: true,
     proxy,
     fs: {
@@ -111,5 +118,5 @@ export default defineConfig({
       ],
     },
   },
-  preview: { host, https, allowedHosts, port: 5173, strictPort: true, proxy },
+  preview: { host, https, allowedHosts, port, strictPort: true, proxy },
 });
