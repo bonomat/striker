@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#101612" />
+  <title>Striker — Price playground</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<main class="playground">
+  <header class="topbar">
+    <a class="wordmark" href="#" aria-label="Striker playground"><span class="brand-mark">↗</span>striker<span class="wordmark-divider"></span><span class="wordmark-sub">PLAYGROUND</span></a>
+    <span class="paper-badge">PAPER TRADES ONLY</span>
+  </header>
+  <section class="market-head" aria-label="Market and price source">
+    <div class="market-title"><span class="bitcoin-icon"><svg viewBox="0 0 24 28" width="23" height="27" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 5h6a4 4 0 0 1 0 8H7m0-8v16m0-8h7a4 4 0 0 1 0 8H7M10 1v4m4-4v4M10 21v5m4-5v5M4 5h3M4 21h3"/></svg></span><div><h1>Bitcoin<span class="market-pair"> / USDT</span></h1><span class="market-sub">A little conviction. A moment in time.</span></div></div>
+    <div class="market-stats"><strong id="headline-price">—</strong><div class="feed-line"><span id="feed-dot" class="feed-dot"></span><span id="feed-status">Connecting to Binance</span><span id="feed-age"></span></div></div>
+  </section>
+  <div class="chart-toolbar">
+    <div class="chart-instruction"><span class="tiny-cross">+</span><span>Pick a price range. <strong>Be there at expiry.</strong></span></div>
+    <div class="scale-control" aria-label="Price band size"><span>Band</span><button data-band="5">$5</button><button class="active" data-band="10">$10</button><button data-band="25">$25</button></div>
+  </div>
+  <section id="chart" class="chart" aria-label="Moving Bitcoin price and future binary-option cells">
+    <canvas id="plot" aria-hidden="true"></canvas>
+    <div id="cells" class="cells" role="group" aria-label="Select a price range and expiry"></div>
+    <div class="now-label" id="now-label">NOW</div>
+    <div class="future-label">POSSIBLE FUTURES <span>→</span></div>
+    <div id="chart-empty" class="chart-empty"><span class="loading-orbit"></span><strong>Finding the pulse…</strong><p>Connecting to public BTC/USDT prices.</p><button id="empty-demo" class="text-button">Try a simulated feed instead ↗</button></div>
+    <div id="trade-tooltip" class="trade-tooltip" hidden></div>
+    <div class="chart-hint">Price at expiry counts. Touching a cell earlier doesn’t.</div>
+  </section>
+  <div class="trade-bar">
+    <div class="balance"><span class="control-label">PAPER BALANCE</span><strong id="balance">$100.00</strong><span id="session-pnl" class="session-pnl">A fresh canvas.</span></div>
+    <div class="stake-control"><span class="control-label">AMOUNT PER TAP</span><div class="stake-buttons" role="group" aria-label="Paper trade amount"><button data-stake="50">$0.50</button><button data-stake="100" class="active">$1</button><button data-stake="200">$2</button><button data-stake="500">$5</button></div></div>
+    <div class="odds-note"><span class="odds-spark">✳</span><span>Illustrative multipliers<br><strong>Real price. Imaginary money.</strong></span></div>
+  </div>
+  <section class="activity-section" aria-label="Paper positions"><div class="activity-head"><span class="control-label">YOUR MOMENTS <span id="open-count">0 OPEN</span></span><button id="reset" class="text-button">Reset session ↺</button></div><div id="positions" class="positions"><p class="position-empty">Your first prediction starts with a cell. Hover or focus to explore, tap to lock it in.</p></div></section>
+  <footer class="footer"><div class="source-toggle" role="group" aria-label="Price source"><button id="live-mode" class="active">Live · Binance</button><button id="demo-mode">Simulated feed</button></div><details><summary>How this playground works</summary><p>No wallet, orders or money. Cell multipliers are illustrative and don’t come from a market maker. Ranges include their lower bound and exclude their upper bound. Paper outcomes use the first source tick at or after expiry, within 2 seconds; missing prices void the trade and return the paper stake. Changing feeds resets the paper session. Live prices are BTC/USDT from Binance, not a USD index.</p><p><a href="https://github.com/binance/binance-spot-api-docs/blob/master/faqs/market_data_only.md" target="_blank" rel="noopener">Public price feed documentation ↗</a></p></details><span id="frame-info">CHART STUDY / 01</span></footer>
+  <div id="announcer" class="sr-only" aria-live="polite"></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+</main>
+<script type="module" src="./app.ts"></script>
+</body></html>
