@@ -43,7 +43,16 @@ main(async () => {
         const offers = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
         offers.sort((a, b) => a.quote.x === b.quote.x ? 0 : a.quote.x > b.quote.x ? -1 : 1);
         const offer = offers[0];
-        if (!offer) throw new HttpError(503, 'No executable maker quotes');
+        if (!offer) {
+          // Only expose known failures agreed on by every configured maker.
+          const reasons = results.map(result => result.status === 'rejected' && result.reason instanceof HttpError
+            ? result.reason.message : undefined);
+          const reason = reasons[0];
+          if (reason && reasons.every(value => value === reason) &&
+              ['Swap amount is too small', 'Insufficient maker liquidity'].includes(reason))
+            throw new HttpError(422, reason);
+          throw new HttpError(503, 'No executable maker quotes');
+        }
         for (const [id, order] of orders) if (order.offer.quote.deadline <= nowSeconds() && order.status === 'quoted') orders.delete(id);
         if (orders.size >= 1000) throw new HttpError(503, 'Order capacity reached; restart clears this PoC store');
         const intent = path === '/v2/quotes';

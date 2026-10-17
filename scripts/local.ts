@@ -68,6 +68,8 @@ async function setup() {
     }
     if (fundingErrors.length) throw new Error(fundingErrors.join('\n') + `\nUse Arkade server ${chain.settings.arkUrl} and rerun setup. No token or deposit was created.`);
     let assetId: string;
+    // Existing tokens retain their original precision; only fresh Mutinynet issuance uses 8 decimals.
+    let assetDecimals = Number(local.taker.config.assetDecimals ?? 0);
     if (existsSync(depositFile)) {
       const saved = object(readJSON(depositFile)), deposit = parseDeposit(saved.deposit);
       if ((saved.network ?? 'regtest') !== network) throw new Error('Saved deposit belongs to another network');
@@ -80,27 +82,29 @@ async function setup() {
     } else {
       if (typeof local.taker.config.assetId === 'string') assetId = local.taker.config.assetId;
       else {
-        const issued = await run('taker', ['issue', '--amount', '20000']);
+        assetDecimals = network === 'mutinynet' ? 8 : 0;
+        const issued = await run('taker', ['issue', '--amount', network === 'mutinynet' ? '100000000000000' : '20000',
+          '--decimals', assetDecimals.toString()]);
         assetId = required(issued.assetId, 'issued assetId');
         // Save before funding the maker so interrupted setup can resume.
-        writeJSON(local.taker.file, { ...local.taker.config, assetId });
+        writeJSON(local.taker.file, { ...local.taker.config, assetId, assetDecimals });
       }
       await run('maker', ['deposit', '--asset-id', assetId, '--sats', liquiditySats.toString(),
-        '--rate-numerator', '5', '--rate-denominator', '1']);
+        '--rate-numerator', '5', '--rate-denominator', (10n ** BigInt(assetDecimals)).toString()]);
     }
-    writeJSON(local.taker.file, { ...local.taker.config, assetId });
+    writeJSON(local.taker.file, { ...local.taker.config, assetId, assetDecimals });
     if (network === 'mutinynet' && local.maker.config.pricing === undefined)
-      writeJSON(local.maker.file, { ...local.maker.config, pricing: { source: 'binance', assetId, assetDecimals: 0 } });
+      writeJSON(local.maker.file, { ...local.maker.config, pricing: { source: 'binance', assetId, assetDecimals } });
     const reverseFile = path.join(local.maker.directory, 'reverse-deposit.json');
     if (!existsSync(reverseFile)) {
-      const tokens = 2000n;
+      const tokens = 2000n * 10n ** BigInt(assetDecimals);
       const held = BigInt((await maker.wallet.getBalance()).availableAssets.find(a => a.assetId === assetId)?.amount ?? 0);
       if (held < tokens) {
         await taker.wallet.send({ address: maker.address, amount: 330, assets: [{ assetId, amount: tokens - held }] });
         await waitFor(async () => BigInt((await maker.wallet.getBalance()).availableAssets.find(a => a.assetId === assetId)?.amount ?? 0) >= tokens ? true : undefined, 'maker token liquidity');
       }
       await run('maker', ['deposit', '--direction', 'btc-to-token', '--asset-id', assetId,
-        '--tokens', tokens.toString(), '--sats', '660', '--rate-numerator', '5', '--rate-denominator', '1']);
+        '--tokens', tokens.toString(), '--sats', '660', '--rate-numerator', '5', '--rate-denominator', (10n ** BigInt(assetDecimals)).toString()]);
     } else {
       const saved = object(readJSON(reverseFile)), deposit = parseDeposit(saved.deposit);
       if (deposit.direction !== 'btc-to-token' || hex(deposit.wantAsset) !== assetId ||

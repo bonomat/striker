@@ -321,15 +321,14 @@ stops before issuing the token or creating the deposit. Send test sats from a
 funded Arkade wallet and rerun the same command. No Docker stack is started for
 the hosted Mutinynet profile.
 
-Once funded, setup issues 20,000 units of the **Striker test asset (POC)** into
-the taker wallet, saves its asset ID, and deposits 25,000 maker sats with the
-configured demo rate of 5 sats per asset atomic unit. This is a demo token, not
-USDt. Repeated setup reuses the saved asset and deposit. Preserve these state
+Once funded, fresh Mutinynet setup issues **1,000,000 demo USD with 8 decimals**
+into the taker wallet, saves its asset ID and precision, and deposits 25,000 maker
+sats. Mutinynet quotes use live Binance pricing. This is a demo token, not USDt. Repeated setup reuses the saved asset and deposit. Preserve these state
 files as well as the keys; deleting them can create another asset or deposit.
-Setup also provisions a token pool with 2,000 POC and a 660-sat carrier. If necessary,
-it transfers POC from the taker to the maker through Arkade before depositing.
-This enables BTC → POC for users who start with BTC. Both directions use separate
-recursive deposits and the same configured rate; proceeds arrive in the maker
+Setup also provisions a token pool with 2,000 demo USD and a 660-sat carrier. If necessary,
+it transfers USD from the taker to the maker through Arkade before depositing.
+This enables BTC → USD for users who start with BTC. Both directions use separate
+recursive deposits; proceeds arrive in the maker
 wallet and are not automatically reinvested into the opposite deposit.
 
 | Data | Regtest | Mutinynet |
@@ -440,7 +439,7 @@ retried or re-funded based only on a client error.
 ## Browser swap interface and taker SDK
 
 `apps/web` provides the swap interface following the [saved visual reference](./docs/swap-reference.png).
-It supports **BTC ↔ POC on Arkade**, defaults to BTC → POC, and shows the active
+It supports **BTC ↔ demo USD on Arkade**, defaults to BTC → USD, and shows the active
 network and demo token honestly. The direction button swaps the input and output
 assets. Live balances, percentage buttons, signed quotes with expiry, cost details,
 review, settlement results and local activity all use real wallet/service data.
@@ -516,7 +515,7 @@ For private network previews, configure `WEB_HOST`, `WEB_ALLOWED_HOSTS`,
 To configure a genuine USDt market, set `WEB_ASSET_ID`, `WEB_ASSET_SYMBOL=USDt`,
 `WEB_ASSET_NAME` and `WEB_ASSET_DECIMALS` to that deployment's verified asset
 metadata, and fund/configure maker pools for that exact asset ID. A ticker alone
-is not an asset identity. Demo setup mints POC, never genuine USDt. Build with the
+is not an asset identity. Demo setup mints demo USD, never genuine USDt. Build with the
 same public settings: `npm run build --workspace @satora/web`. Deployment must
 serve the generated `config.json`. By default the UI uses the fixed `/api/striker`,
 `/api/ark`, `/api/esplora` and read-only `/api/emulator/v1/info` proxies. Static
@@ -539,10 +538,10 @@ In the target repository:
    | Variable | Value |
    |---|---|
    | `WEB_STRIKER_URL` | Required: public HTTPS Striker endpoint, e.g. `https://striker.example.com` |
-   | `WEB_ASSET_ID` | Required: exact 68-character asset ID supported by the maker pools |
+   | `WEB_ASSET_ID` | Exact 68-character asset ID; defaults to the active 8-decimal demo USD asset |
    | `WEB_ASSET_SYMBOL` | Optional; default `USD` (demo) |
-   | `WEB_ASSET_NAME` | Optional; default `Striker test asset` |
-   | `WEB_ASSET_DECIMALS` | Optional; default `0` |
+   | `WEB_ASSET_NAME` | Optional; default `Striker demo USD` |
+   | `WEB_ASSET_DECIMALS` | `8` for demo USD; configure explicitly for custom assets |
    | `ARK_URL` | Optional; default `https://mutinynet.arkade.sh` |
    | `ESPLORA_URL` | Optional; default `https://mempool.mutinynet.arkade.sh/api` |
    | `EMULATOR_URL` | Optional; default hosted Mutinynet Emulator |
@@ -659,10 +658,18 @@ References: [Arkade regtest](https://github.com/ArkLabsHQ/arkade-regtest),
 ## Live demo USD pricing
 
 The `poc-intent-v1-working` tag preserves the last working POC/static-price release.
-The existing Mutinynet asset ID and 0 decimals are retained. Its display symbol is now
-USD, so one atomic unit is one demo USD; original issued metadata can still say POC.
-It is neither dollar-backed nor genuine USDt. Renaming does not issue a new asset or
-change existing balances. Newly issued setup tokens use USD metadata.
+The active Mutinynet demo USD asset has **8 decimals**: one displayed USD is
+100,000,000 atomic units. Its asset ID is:
+
+```text
+dbf3d47b83267a77276c229f6a006f14dded9a7658b4db91b751f07cfc8aaff30000
+```
+
+The initial supply is **1,000,000 demo USD** (100,000,000,000,000 atomic units),
+with 2,000 USD initially deposited in the maker's token pool. This is a newly issued
+asset, neither dollar-backed nor genuine USDt. The retired whole-unit token
+`9571dc4fdbfb607452b78e9fd0d904b5d8b8516c1b85745b997e67d35dc61a070000`
+remains separate: existing balances are not converted or reinterpreted.
 
 Mutinynet setup enables this maker profile configuration when no pricing mode exists:
 
@@ -670,16 +677,16 @@ Mutinynet setup enables this maker profile configuration when no pricing mode ex
 {
   "pricing": {
     "source": "binance",
-    "assetId": "9571dc4fdbfb607452b78e9fd0d904b5d8b8516c1b85745b997e67d35dc61a070000",
-    "assetDecimals": 0
+    "assetId": "dbf3d47b83267a77276c229f6a006f14dded9a7658b4db91b751f07cfc8aaff30000",
+    "assetDecimals": 8
   }
 }
 ```
 
 Merge this into `.maker/mutinynet/local-emulator/config.json` (or the active profile),
 then restart the maker. Decimals must match the frontend; asset ID must match every
-loaded maker pool. This changes pricing only, so existing covenants and liquidity
-remain valid. Regtest defaults to the saved static rates; `pricing.source: "static"`
+loaded maker pool. Switching asset IDs requires new covenants funded with the new asset.
+Never change only the decimals on an existing whole-unit asset. Regtest defaults to the saved static rates; `pricing.source: "static"`
 also explicitly selects them. Earlier static-price examples in this document describe
 regtest and the tagged POC deployment. They are not the current Mutinynet market rate.
 
@@ -701,13 +708,45 @@ does not provide a source timestamp, so this is a local fetch-age limit, not pro
 of exchange event freshness. `/health` exposes the pricing mode and sample freshness.
 Already signed quotes retain their fixed price until their signed deadline.
 
-With whole demo USD units, small BTC amounts may round to zero and be rejected.
-At roughly 100,000 USD/BTC, start with about 2,000 sats or 1 USD; maker liquidity
-and the existing 330-sat receipt/change constraints still apply. No funds are
-automatically deposited or fetched from a faucet.
+For an 80,000 USD/BTC bid, 1,000 sats now returns **0.8 USD** instead of
+rounding to zero. The existing 330-sat receipt/change constraints still apply:
+very small swaps can be rejected even with fractional tokens. The UI distinguishes
+amounts below the minimum from insufficient maker liquidity; other unavailable
+quotes use a generic message. Minting more tokens does not fund BTC payouts.
 
-Pages now defaults to USD and treats the legacy `WEB_ASSET_SYMBOL=POC` repository
-variable as USD for the display-name migration. The asset ID and decimals variables
-remain unchanged. Set `WEB_ASSET_SYMBOL=USD` and `WEB_ASSET_NAME=Striker demo USD`
-to make the repository variables explicit. The current token always remains marked
-as a demo asset in the interface.
+Fresh Mutinynet setup issues 8-decimal demo USD; regtest keeps the whole-unit
+static-price fixtures. Existing setup state retains its saved precision, defaulting
+to 0 only for legacy configurations. CLI `issue --amount` takes atomic units and
+accepts `--decimals` (default 8); amounts passed to quotes are also atomic units.
+
+To explicitly migrate an existing Mutinynet installation, with adequate funds in
+both CLI wallets (no faucet is used):
+
+```sh
+npm run build
+STRIKER_NETWORK=mutinynet STRIKER_EMULATOR=local \
+  node --experimental-eventsource --import tsx scripts/migrate-usd.ts prepare 5000
+# Stop the maker before activating; no new quotes during the switch.
+systemctl --user stop striker-maker.service
+STRIKER_NETWORK=mutinynet STRIKER_EMULATOR=local \
+  node --experimental-eventsource --import tsx scripts/migrate-usd.ts activate
+systemctl --user start striker-maker.service
+systemctl --user restart striker.service
+```
+
+Preparation records the issuance and new pool descriptors in the profile's
+`usd8-migration/` directory. Activation switches the maker pools, pricing, and CLI
+asset ID/precision. Keep this directory: its `legacy-*` files preserve the old pool
+descriptors and configs needed for recovery. Legacy funds stay in their original
+pools. Preparation can resume after completion of recorded steps; an interrupted
+issuance without a receipt deliberately stops for inspection rather than minting twice.
+A transport failure during pool funding likewise requires inspecting the wallet
+and recovering the pool descriptor before retrying. Key backups remain essential.
+
+Pages maps an unset or retired demo asset ID to the new asset and 8 decimals together,
+so the existing repository variables cannot accidentally relabel old units.
+For custom assets, set `WEB_ASSET_ID` and `WEB_ASSET_DECIMALS` explicitly. Local web
+builds use the saved taker `assetDecimals`; static builds use the workflow variables.
+Keep `WEB_ASSET_SYMBOL=USD` and `WEB_ASSET_NAME=Striker demo USD`. The token remains
+marked as a demo asset in the interface. Refresh after deployment to load the new
+asset configuration; existing old-token balances remain visible in wallet details.

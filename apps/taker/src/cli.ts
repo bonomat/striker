@@ -10,7 +10,7 @@ import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, 
 
 const HELP = `taker init | address | balance | move-legacy
 taker withdraw --to ARKADE_ADDRESS
-taker issue --amount UNITS  (mint a demo asset on the selected test network)
+taker issue --amount UNITS [--decimals 8]  (amount is atomic units)
 taker quote [--striker URL] [--asset-id HEX] [--give-amount UNITS] [--direction token-to-btc|btc-to-token] [--out FILE]
 taker execute | refund [--quote FILE]
 taker status [--striker URL] [--quote-id ID]
@@ -19,7 +19,7 @@ The private key is generated once in DIR/private-key. TAKER_PRIVATE_KEY imports 
 Execute/status use the most recent saved quote by default. All swaps go through Striker.`;
 
 main(async () => {
-  const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'out', 'quote', 'quote-id', 'to']);
+  const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'decimals', 'out', 'quote', 'quote-id', 'to']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
   if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status', 'move-legacy', 'withdraw'].includes(command)) throw new Error(HELP);
@@ -66,11 +66,13 @@ main(async () => {
     }
     if (command === 'issue') {
       const amount = decimal(flags.amount, '--amount', true);
+      const decimals = Number(flags.decimals ?? 8);
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error('Invalid --decimals');
       const result = await actor.wallet.assetManager.issue({ amount,
-        metadata: { name: 'Striker demo USD', ticker: 'USD', decimals: 0 } });
+        metadata: { name: 'Striker demo USD', ticker: 'USD', decimals } });
       await waitFor(async () => (await actor.wallet.getVtxos()).some(v =>
         v.assets?.some(a => a.assetId === result.assetId)) ? true : undefined, 'test asset issuance');
-      console.log(JSON.stringify({ assetId: result.assetId, amount: amount.toString() }));
+      console.log(JSON.stringify({ assetId: result.assetId, amount: amount.toString(), decimals }));
       return;
     }
     let file = command === 'quote' ? (typeof flags.out === 'string' ? flags.out : undefined) : quoteFile();

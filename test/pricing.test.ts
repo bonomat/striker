@@ -16,6 +16,14 @@ test('live pricing uses bid/ask and floors exact USD conversions in both directi
   assert.equal(await feed.output(999n, 'btc-to-token'), 79n);
 });
 
+test('8-decimal USD preserves sub-dollar swaps and large supplies exactly', async () => {
+  const feed = new BinancePricing(8, async () => book());
+  assert.equal(await feed.output(1000n, 'btc-to-token'), 80_000_000n); // 0.80 USD
+  assert.equal(await feed.output(81_000_000n, 'token-to-btc'), 1000n); // 0.81 USD
+  assert.equal(await feed.output(999n, 'btc-to-token'), 79_920_000n);
+  assert.equal(await feed.output(100_000_000_000_000n, 'token-to-btc'), 1_234_567_901n);
+});
+
 test('quotes share one refresh, expire the cache, and use the next market sample', async () => {
   let now = 1000, calls = 0;
   const feed = new BinancePricing(0, async url => {

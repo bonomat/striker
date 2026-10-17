@@ -131,7 +131,7 @@ withdrawOrCancel = owner.sign(selfSpendOrWithdrawal)`}</Code>
     <aside className="protocol-limits" aria-labelledby="protocol-limits-title">
       <span className="tiny-label">CURRENT IMPLEMENTATION</span>
       <h2 id="protocol-limits-title">An experiment you can inspect.</h2>
-      <p>This runs on Mutinynet with a demo token displayed as USD. The existing token ID and 0 decimals are preserved; its original issued metadata may still say POC. New quotes use Binance BTC/USDT bid/ask prices as a dollar proxy, treating 1 USDT as 1 demo USD. This token is not backed by dollars and is not genuine USDt. Each swap uses one maker and up to four taker inputs. Striker orders are held in memory; durable execution recovery, automatic rebalancing and unilateral exits remain future work.</p>
+      <p>This runs on Mutinynet with a demo token displayed as USD. The demo USD asset has 8 decimals: one USD equals 100,000,000 atomic units, allowing fractional-dollar swaps. The earlier whole-unit POC/USD token remains a separate asset. New quotes use Binance BTC/USDT bid/ask prices as a dollar proxy, treating 1 USDT as 1 demo USD. This token is not backed by dollars and is not genuine USDt. Each swap uses one maker and up to four taker inputs. Striker orders are held in memory; durable execution recovery, automatic rebalancing and unilateral exits remain future work.</p>
       <div><a href="https://github.com/bonomat/striker" target="_blank" rel="noopener noreferrer">Explore the repository ↗</a><a href="#/">Back to swapping →</a></div>
     </aside>
   </article>;

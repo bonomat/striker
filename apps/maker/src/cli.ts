@@ -18,7 +18,7 @@ Serve loads deposit.json and reverse-deposit.json; --reverse-state overrides the
 --config-dir DIR defaults to .maker (or MAKER_CONFIG_DIR).
 The private key is generated once in DIR/private-key. MAKER_PRIVATE_KEY imports an existing key.
 Rates are BTC sats per asset atomic unit, as an integer fraction.
-Set config.json pricing={source:"binance",assetId:"...",assetDecimals:0} for live BTCUSDT bid/ask pricing.
+Set config.json pricing={source:"binance",assetId:"...",assetDecimals:8} for live BTCUSDT bid/ask pricing.
 Without pricing configuration the saved static deposit rates are used (regtest compatibility).
 --network regtest|mutinynet (or STRIKER_NETWORK). Keys are shared; state is per network.`;
 
@@ -80,8 +80,10 @@ main(async () => {
           catch { throw new HttpError(503, 'Live price feed unavailable; no quote issued'); }
         } else x = reverse ? y * state.denominator / state.numerator : y * state.numerator / state.denominator;
         const held = BigInt(coin.assets?.find(a => a.assetId === request.assetId)?.amount ?? 0);
-        if (reverse ? (y < 330n || x <= 0n || held <= x || coin.assets?.length !== 1) :
-            (x < 330n || BigInt(coin.value) - x < 330n)) throw new HttpError(422, 'Trade outside available liquidity');
+        if (reverse ? (y < 330n || x <= 0n) : x < 330n)
+          throw new HttpError(422, 'Swap amount is too small');
+        if (reverse ? (held <= x || coin.assets?.length !== 1) : BigInt(coin.value) - x < 330n)
+          throw new HttpError(422, 'Insufficient maker liquidity');
         const quote = { x, y, epoch: await epochOf(chain, coin), deadline: nowSeconds() + BigInt(ttl) };
         return offerJSON({ deposit: state.deposit, quote, signature: signQuote(state.deposit, quote, key) });
       });

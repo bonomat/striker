@@ -55,7 +55,8 @@ if (staticSite) {
   }
 }
 const symbol = process.env.WEB_ASSET_SYMBOL ?? "USD";
-const decimals = Number(process.env.WEB_ASSET_DECIMALS ?? "0");
+// Saved assets without precision metadata are legacy whole-unit tokens.
+const decimals = Number(process.env.WEB_ASSET_DECIMALS ?? taker.config.assetDecimals ?? "0");
 if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18)
   throw new Error("Invalid WEB_ASSET_DECIMALS");
 const config: AppConfig = {

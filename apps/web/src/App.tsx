@@ -390,7 +390,7 @@ export default function App() {
           if (!cancelled)
             setQuoteError(
               errorMessage(error) === "No executable maker quotes"
-                ? "This amount exceeds available liquidity. Try a smaller swap."
+                ? "No quote is available for this amount. The maker may be unavailable or have insufficient liquidity."
                 : errorMessage(error),
             );
         })

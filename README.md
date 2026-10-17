@@ -27,8 +27,8 @@ the other commands. Existing CLI funds at the previous address need an explicit
 in the wallet dialog. New receive addresses deposit directly into the reusable taker covenant.
 
 Mutinynet makers use Binance BTC/USDT bid/ask prices as a dollar proxy for new quotes.
-The existing demo token is displayed as USD with 0 decimals; its asset ID is unchanged,
-and issued metadata may still say POC. It is not backed USD or genuine USDt.
+The active demo USD asset has 8 decimals and an initial supply of 1 million USD.
+It is a new asset; earlier whole-unit POC/USD balances remain separate. It is not backed USD or genuine USDt.
 Regtest retains deterministic static prices. See [live pricing configuration](./POC.md#live-demo-usd-pricing).
 
 The [GitHub Pages workflow](./.github/workflows/pages.yml) deploys the frontend on
