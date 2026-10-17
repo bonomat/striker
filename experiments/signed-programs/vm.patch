@@ -1,0 +1,49 @@
+--- a/pkg/arkade/engine.go
++++ b/pkg/arkade/engine.go
+@@ -74,6 +74,10 @@
+ 
+ // Engine is the virtual machine that executes scripts.
+ type Engine struct {
++	// Opt-in research extension. Never enabled by existing service execution.
++	experimentalEvalVerify bool
++	evalInvoked            bool
++
+ 	// The following fields are set when the engine is created and must not be
+ 	// changed afterwards.  The entries of the signature cache are mutated
+ 	// during execution, however, the cache pointer itself is not changed.
+--- a/pkg/arkade/script.go
++++ b/pkg/arkade/script.go
+@@ -23,6 +23,12 @@
+ 	pubkey          *btcec.PublicKey
+ 	spendingTapLeaf txscript.TapLeaf
+ 	closurePubkeys  []*btcec.PublicKey
++}
++
++// WithExperimentalEvalVerify enables the research-only witness-program opcode.
++// Existing service call sites do not pass this option.
++func WithExperimentalEvalVerify() ExecuteOption {
++	return func(engine *Engine) { engine.experimentalEvalVerify = true }
+ }
+ 
+ type ExecuteOption func(*Engine)
+--- a/pkg/arkade/opcode.go
++++ b/pkg/arkade/opcode.go
+@@ -319,6 +319,9 @@
+ 	OP_INVALIDOPCODE                 = 0xff // 255 - bitcoin core internal
+ )
+ 
++// OP_EVALVERIFY is a research-only alias for an otherwise invalid opcode.
++const OP_EVALVERIFY = OP_UNKNOWN189
++
+ // Conditional execution constants.
+ const (
+ 	OpCondFalse = 0
+@@ -537,7 +540,7 @@
+ 
+ 	// Undefined opcodes.
+ 	OP_UNKNOWN188: {OP_UNKNOWN188, "OP_UNKNOWN188", 1, opcodeInvalid},
+-	OP_UNKNOWN189: {OP_UNKNOWN189, "OP_UNKNOWN189", 1, opcodeInvalid},
++	OP_EVALVERIFY: {OP_EVALVERIFY, "OP_EVALVERIFY", 1, opcodeInvalid},
+ 	OP_UNKNOWN190: {OP_UNKNOWN190, "OP_UNKNOWN190", 1, opcodeInvalid},
+ 	OP_UNKNOWN191: {OP_UNKNOWN191, "OP_UNKNOWN191", 1, opcodeInvalid},
+ 	OP_UNKNOWN192: {OP_UNKNOWN192, "OP_UNKNOWN192", 1, opcodeInvalid},
