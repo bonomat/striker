@@ -31,7 +31,11 @@ export function loadConfig(role: Role, explicit?: string, network = networkName(
     const parentFile = path.join(networkDirectory, 'config.json');
     if (existsSync(parentFile)) {
       const parent = object(JSON.parse(readFileSync(parentFile, 'utf8')));
-      if (typeof parent.assetId === 'string') config.assetId = parent.assetId;
+      if (typeof parent.assetId === 'string') {
+        config.assetId = parent.assetId;
+        // Asset identity and precision must travel together across profiles.
+        config.assetDecimals = parent.assetDecimals ?? 0;
+      }
     }
   }
   return { directory, keyDirectory, file, config };

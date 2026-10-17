@@ -78,12 +78,17 @@ test('local Mutinynet Emulator gets separate state, shared wallet keys and the e
   });
   process.env.STRIKER_EMULATOR = 'hosted';
   const hosted = loadConfig('taker', directory, 'mutinynet');
-  writeFileSync(hosted.file, JSON.stringify({ assetId: 'same-chain-token' }));
+  writeFileSync(hosted.file, JSON.stringify({ assetId: 'same-chain-token', assetDecimals: 8 }));
   process.env.STRIKER_EMULATOR = 'local';
   const local = loadConfig('taker', directory, 'mutinynet');
   assert.equal(local.directory, path.join(hosted.directory, 'local-emulator'));
   assert.equal(local.keyDirectory, hosted.keyDirectory);
   assert.equal(local.config.assetId, 'same-chain-token');
+  assert.equal(local.config.assetDecimals, 8);
   assert.equal(local.config.giveAmount, '100');
   assert.notEqual(local.file, hosted.file);
+  writeFileSync(local.file, JSON.stringify({ assetId: 'local-token', assetDecimals: 2 }));
+  const reloaded = loadConfig('taker', directory, 'mutinynet');
+  assert.equal(reloaded.config.assetId, 'local-token');
+  assert.equal(reloaded.config.assetDecimals, 2);
 });
