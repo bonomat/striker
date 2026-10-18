@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { HowItWorks } from "./HowItWorks.js";
 import "./protocol.css";
 
 const source = "https://github.com/bonomat/striker/blob/3b29f6e63a8051a1550a5c711be3990d05be0e57/";
@@ -15,7 +16,7 @@ function Section({ number, title, children }: { number: string; title: string; c
     <div><h2 id={`protocol-${number}`}>{title}</h2>{children}</div>
   </section>;
 }
-export function ProtocolPage() {
+export function ProtocolPage({ assetSymbol, bitcoinToToken }: { assetSymbol: string; bitcoinToToken: boolean }) {
   return <article className="protocol-page">
     <header className="protocol-hero">
       <span className="tiny-label">THE STRIKER PROTOCOL · INTENT V1</span>
@@ -23,6 +24,8 @@ export function ProtocolPage() {
       <p>A maker signs a price. Your wallet signs an authorization. Striker brings them together in one atomic transaction on Arkade.</p>
       <div className="protocol-tags"><span>BTC ↔ Arkade tokens</span><span>Reusable covenants</span><span>Mutinynet PoC</span></div>
     </header>
+
+    <HowItWorks assetSymbol={assetSymbol} bitcoinToToken={bitcoinToToken} />
 
     <Section number="01" title="Funds arrive ready to swap.">
       <p>Your receive address is a reusable taker covenant. Deposits already carry the spending rules needed for a swap, so accepting a quote does not create another funding transaction. Swap receipts and change return to that same address.</p>

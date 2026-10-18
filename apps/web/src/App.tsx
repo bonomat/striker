@@ -747,7 +747,7 @@ export default function App() {
         </div>
       </header>
       <main className="main-content">
-        {page === "protocol" ? <ProtocolPage /> : <>
+        {page === "protocol" ? <ProtocolPage assetSymbol={asset.symbol} bitcoinToToken={reverse} /> : <>
         <section className="hero" aria-labelledby="hero-title">
           <div className="eyebrow">
             <span />
