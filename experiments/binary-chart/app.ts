@@ -19,10 +19,9 @@ let websocket: WebSocket | null = null, pollTimer = 0, retryTimer = 0, demoTimer
 let retryCount = 0, lastPoll = 0, polling = false, demoIndex = 0, sigma = 2;
 let clockOffset = 0, clockSet = false;
 const marketNow = () => Date.now() + clockOffset;
-let toastTimer = 0, hoverKey: string | null = null, pointerInside = false;
+let toastTimer = 0, hoverKey: string | null = null;
 let plotRight = 900, nowX = 350, pixelsPerMs = 0.01, rowHeight = 48;
 const cells = new Map<string, { button: HTMLButtonElement; lower: number; expiry: number; multiplier: number | null }>();
-const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function announce(message: string) { $('announcer').textContent = message; }
 function toast(message: string) {
@@ -154,7 +153,9 @@ function updateCells(now: number, price: number, labels: boolean) {
         button.addEventListener('blur', () => { hoverKey = null; $('trade-tooltip').hidden = true; });
         cell = { button, lower, expiry, multiplier: null }; cells.set(key, cell); cellLayer.append(button);
       }
-      const x = Math.max(nowX + 8, left + 3), w = Math.max(0, right - 3 - x);
+      // Full-size cells slide behind the now boundary; clipping never rescales them.
+      const x = left + 3, w = right - left - 6;
+      const visibleWidth = right - 3 - Math.max(nowX, x);
       cell.button.style.transform = `translate(${x}px,${top}px)`;
       cell.button.style.width = `${w}px`; cell.button.style.height = `${rowHeight - 6}px`;
       const existing = trades.find(t => t.lower === lower && t.upper === lower + band && t.expiry === expiry);
@@ -164,7 +165,7 @@ function updateCells(now: number, price: number, labels: boolean) {
         cell.button.className = `cell${existing ? ' selected' : !fresh() || waiting ? ' waiting' : cell.multiplier === null ? ' unavailable' : ''}`;
         cell.button.innerHTML = existing ? `<span class="cell-stake">${cellSats(existing.stakeSats)}</span><span>${existing.multiplier.toFixed(2)}×</span>` :
           cell.multiplier === null ? '<span>·</span>' : `<span>${cell.multiplier.toFixed(2)}×</span>`;
-        cell.button.disabled = Boolean(existing) || waiting || !fresh() || cell.multiplier === null || w < 20;
+        cell.button.disabled = Boolean(existing) || waiting || !fresh() || cell.multiplier === null || visibleWidth < 20;
         cell.button.setAttribute('aria-label', `${range(lower, lower + band)} at ${clock(expiry)}. ${existing ? 'Paper trade locked' : `${cell.multiplier?.toFixed(2) ?? 'No'} times total payout, ${sats(stake)} paper stake`}`);
       }
     }
@@ -174,21 +175,19 @@ function updateCells(now: number, price: number, labels: boolean) {
 
 function y(price: number) { return height * 0.49 - (price - center) / band * rowHeight; }
 function x(time: number, now: number) { return nowX + (time - now) * pixelsPerMs; }
-let previousFrame = performance.now();
 function frame(timestamp: number) {
-  const now = marketNow(), dt = Math.min(100, timestamp - previousFrame); previousFrame = timestamp;
+  const now = marketNow();
   const last = latest();
   ctx.clearRect(0, 0, width, height);
   if (last) {
-    const target = last.price;
-    // Keep price bins fixed in value. Only the viewport follows; selected terms never change.
-    if (!pointerInside && !cellLayer.contains(document.activeElement)) center += (target - center) * (reducedMotion ? 1 : Math.min(1, dt / 1500));
+    // Hold the price axis steady. Only the price trace moves between rows.
     const compact = width < 700;
     plotRight = width - (compact ? 67 : 80);
     nowX = plotRight * (compact ? 0.28 : 0.39);
     pixelsPerMs = (plotRight - nowX) / (compact ? 30_000 : 60_000);
     rowHeight = Math.max(43, Math.min(55, (height - 75) / 7));
     $('now-label').style.left = `${nowX}px`;
+    cellLayer.style.clipPath = `inset(22px ${width - plotRight}px 44px ${nowX}px)`;
     ctx.save(); ctx.beginPath(); ctx.rect(0, 24, plotRight, height - 64); ctx.clip();
     const startRow = Math.floor(center / band) - 7;
     ctx.lineWidth = 1;
@@ -239,7 +238,7 @@ function frame(timestamp: number) {
 
 function resize(){const rect=chart.getBoundingClientRect();width=rect.width;height=rect.height;const dpr=Math.min(2,devicePixelRatio||1);canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);}
 new ResizeObserver(resize).observe(chart);
-chart.addEventListener('pointerenter',()=>{pointerInside=true;});chart.addEventListener('pointerleave',()=>{pointerInside=false;hoverKey=null;$('trade-tooltip').hidden=true;});
+chart.addEventListener('pointerleave',()=>{hoverKey=null;$('trade-tooltip').hidden=true;});
 
 async function poll(version: number) {
   if (polling || version !== generation || mode !== 'live') return;
@@ -281,6 +280,7 @@ function switchMode(next:'live'|'demo'){
 }
 document.querySelectorAll<HTMLButtonElement>('[data-band]').forEach(button=>button.addEventListener('click',()=>{band=Number(button.dataset.band);document.querySelectorAll('[data-band]').forEach(b=>b.classList.toggle('active',b===button));hoverKey=null;$('trade-tooltip').hidden=true;}));
 document.querySelectorAll<HTMLButtonElement>('[data-stake]').forEach(button=>button.addEventListener('click',()=>{stake=Number(button.dataset.stake);document.querySelectorAll('[data-stake]').forEach(b=>b.classList.toggle('active',b===button));announce(`${sats(stake)} per paper trade`);}));
+$('center-price').addEventListener('click',()=>{const tick=latest();if(tick){center=tick.price;announce('Price view centered. Price rows stay fixed until you center again.');}});
 $('demo-mode').addEventListener('click',()=>{if(mode!=='demo'){switchMode('demo');toast('New paper session · simulated prices');}});
 $('live-mode').addEventListener('click',()=>{if(mode!=='live'){switchMode('live');toast('New paper session · connecting to Binance');}});
 $('empty-demo').addEventListener('click',()=>switchMode('demo'));

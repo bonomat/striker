@@ -19,7 +19,7 @@
   </section>
   <div class="chart-toolbar">
     <div class="chart-instruction"><span class="tiny-cross">+</span><span>Pick a price range. <strong>Be there at expiry.</strong></span></div>
-    <div class="scale-control" aria-label="Price band size"><span>Band</span><button data-band="5">$5</button><button class="active" data-band="10">$10</button><button data-band="25">$25</button></div>
+    <div class="scale-control" aria-label="Price band size"><button id="center-price" aria-label="Center the price view" title="Center the price view">⌖</button><span>Band</span><button data-band="5">$5</button><button class="active" data-band="10">$10</button><button data-band="25">$25</button></div>
   </div>
   <section id="chart" class="chart" aria-label="Moving Bitcoin price and future binary-option cells">
     <canvas id="plot" aria-hidden="true"></canvas>

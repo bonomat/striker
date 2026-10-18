@@ -18,8 +18,10 @@ npm run build:chart
 ## UX decisions
 
 - The time cursor stays anchored while real price history moves left and expiry
-  columns approach from the right. A gentle vertical follow keeps the current price
-  in view; hovering the chart holds the viewport to make targets easier to select.
+  columns approach from the right. The price axis stays fixed while the line moves
+  between price rows. The center-view button explicitly brings an offscreen price
+  back into view. Cells retain their full dimensions as they slide behind the now
+  boundary; clipping hides elapsed portions without squeezing their contents.
 - Price bins have fixed absolute bounds. Following the price or changing band size
   never changes an already selected trade's bounds, expiry or multiplier.
 - Each column expires at a fixed 10-second boundary. Only the price **at expiry**
