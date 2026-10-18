@@ -9,7 +9,10 @@ const dollars = (value: number, decimals = 2) => '$' + value.toLocaleString('en-
 });
 const clock = (time: number) => new Date(time).toLocaleTimeString('en-GB', { hour12: false });
 const API = 'https://data-api.binance.vision/api/v3';
-let width = 1000, height = 450, band = 10, center = 0, stake = 100, balance = 10_000;
+const INITIAL_BALANCE_SATS = 100_000;
+const sats = (value: number) => `${value.toLocaleString('en-US')} sats`;
+const cellSats = (value: number) => `${value >= 1000 ? value / 1000 + 'k' : value} sats`;
+let width = 1000, height = 450, band = 10, center = 0, stake = 1000, balance = INITIAL_BALANCE_SATS;
 let ticks: Tick[] = [], trades: PaperTrade[] = [], id = 0, generation = 0;
 let mode: 'live' | 'demo' = 'live', transport = 'stream', receivedAt = 0, lastLabel = 0;
 let websocket: WebSocket | null = null, pollTimer = 0, retryTimer = 0, demoTimer = 0;
@@ -67,17 +70,17 @@ function updateInterface(now: number) {
     const old = trades[i]!, resolved = resolveTrade(old, ticks, now);
     if (old.status === 'open' && resolved.status !== 'open') {
       trades[i] = resolved;
-      if (resolved.status === 'won') balance += resolved.payoutCents;
-      if (resolved.status === 'void') balance += resolved.stakeCents;
-      const result = resolved.status === 'won' ? `Won · ${dollars(resolved.payoutCents / 100)} returned` :
+      if (resolved.status === 'won') balance += resolved.payoutSats;
+      if (resolved.status === 'void') balance += resolved.stakeSats;
+      const result = resolved.status === 'won' ? `Won · ${sats(resolved.payoutSats)} returned` :
         resolved.status === 'void' ? 'Missing expiry price · paper stake returned' : 'Outside your range · paper trade lost';
       toast(result); announce(result);
     }
   }
   const open = trades.filter(t => t.status === 'open');
-  $('balance').textContent = dollars(balance / 100);
-  const pnl = balance + open.reduce((sum, t) => sum + t.stakeCents, 0) - 10_000;
-  $('session-pnl').textContent = trades.length ? `${pnl >= 0 ? '+' : '−'}${dollars(Math.abs(pnl) / 100)} session` : 'A fresh canvas.';
+  $('balance').textContent = sats(balance);
+  const pnl = balance + open.reduce((sum, t) => sum + t.stakeSats, 0) - INITIAL_BALANCE_SATS;
+  $('session-pnl').textContent = trades.length ? `${pnl >= 0 ? '+' : '−'}${sats(Math.abs(pnl))} session` : 'A fresh canvas.';
   $('open-count').textContent = `${open.length} OPEN`;
   const positions = $('positions');
   if (trades.length) {
@@ -85,8 +88,8 @@ function updateInterface(now: number) {
       const item = document.createElement('article'); item.className = `position ${trade.status}`;
       const remaining = Math.max(0, Math.ceil((trade.expiry - now) / 1000));
       const outcome = trade.status === 'open' ? (remaining ? `${remaining}s` : 'Checking…') :
-        trade.status === 'won' ? `WON ${dollars(trade.payoutCents / 100)}` : trade.status === 'void' ? 'VOID · REFUNDED' : 'MISSED';
-      item.innerHTML = `<strong>${range(trade.lower, trade.upper)}</strong><strong class="trade-result">${outcome}</strong><span>${clock(trade.expiry)} · ${dollars(trade.stakeCents / 100)} stake</span><span>${trade.multiplier.toFixed(2)}× locked</span>`;
+        trade.status === 'won' ? `WON ${sats(trade.payoutSats)}` : trade.status === 'void' ? 'VOID · REFUNDED' : 'MISSED';
+      item.innerHTML = `<strong>${range(trade.lower, trade.upper)}</strong><strong class="trade-result">${outcome}</strong><span>${clock(trade.expiry)} · ${sats(trade.stakeSats)} stake</span><span>${trade.multiplier.toFixed(2)}× locked</span>`;
       return item;
     }));
   } else if (!positions.querySelector('.position-empty')) {
@@ -110,8 +113,8 @@ function showTooltip(key: string) {
   const tooltip = $('trade-tooltip');
   tooltip.hidden = false;
   tooltip.innerHTML = `<b>${range(cell.lower, cell.lower + band)}</b> at ${clock(cell.expiry)}<br>` +
-    (existing ? `Locked · ${dollars(existing.stakeCents / 100)} stake · ${existing.multiplier.toFixed(2)}×` :
-      multiplier ? `Pay ${dollars(stake / 100)} · return <b>${dollars(Math.floor(stake * multiplier) / 100)}</b> if correct<br>Max loss ${dollars(stake / 100)} · illustrative payout` : 'No illustrative quote for this cell');
+    (existing ? `Locked · ${sats(existing.stakeSats)} stake · ${existing.multiplier.toFixed(2)}×` :
+      multiplier ? `Pay ${sats(stake)} · return <b>${sats(Math.floor(stake * multiplier))}</b> if correct<br>Max loss ${sats(stake)} · illustrative payout` : 'No illustrative quote for this cell');
 }
 function place(key: string) {
   const cell = cells.get(key), now = marketNow();
@@ -122,10 +125,10 @@ function place(key: string) {
   if (trades.filter(t => t.status === 'open').length >= 8) { toast('Eight moments at once. Let one finish first.'); return; }
   if (trades.some(t => t.lower === cell.lower && t.upper === cell.lower + band && t.expiry === cell.expiry)) return;
   const trade: PaperTrade = { id: ++id, lower: cell.lower, upper: cell.lower + band, expiry: cell.expiry,
-    placedAt: now, stakeCents: stake, multiplier: cell.multiplier,
-    payoutCents: Math.floor(stake * cell.multiplier), status: 'open' };
+    placedAt: now, stakeSats: stake, multiplier: cell.multiplier,
+    payoutSats: Math.floor(stake * cell.multiplier), status: 'open' };
   trades.push(trade); balance -= stake;
-  announce(`Paper trade locked: ${range(trade.lower, trade.upper)} at ${clock(trade.expiry)}. ${dollars(trade.stakeCents / 100)} stake.`);
+  announce(`Paper trade locked: ${range(trade.lower, trade.upper)} at ${clock(trade.expiry)}. ${sats(trade.stakeSats)} stake.`);
   showTooltip(key); updateInterface(now);
 }
 
@@ -159,10 +162,10 @@ function updateCells(now: number, price: number, labels: boolean) {
         cell.multiplier = illustrativeMultiplier(price, lower, lower + band, (expiry - now) / 1000, sigma);
         const waiting = expiry - now < 2000;
         cell.button.className = `cell${existing ? ' selected' : !fresh() || waiting ? ' waiting' : cell.multiplier === null ? ' unavailable' : ''}`;
-        cell.button.innerHTML = existing ? `<span class="cell-stake">${dollars(existing.stakeCents / 100, existing.stakeCents % 100 ? 2 : 0)}</span><span>${existing.multiplier.toFixed(2)}×</span>` :
+        cell.button.innerHTML = existing ? `<span class="cell-stake">${cellSats(existing.stakeSats)}</span><span>${existing.multiplier.toFixed(2)}×</span>` :
           cell.multiplier === null ? '<span>·</span>' : `<span>${cell.multiplier.toFixed(2)}×</span>`;
         cell.button.disabled = Boolean(existing) || waiting || !fresh() || cell.multiplier === null || w < 20;
-        cell.button.setAttribute('aria-label', `${range(lower, lower + band)} at ${clock(expiry)}. ${existing ? 'Paper trade locked' : `${cell.multiplier?.toFixed(2) ?? 'No'} times total payout, ${dollars(stake / 100)} paper stake`}`);
+        cell.button.setAttribute('aria-label', `${range(lower, lower + band)} at ${clock(expiry)}. ${existing ? 'Paper trade locked' : `${cell.multiplier?.toFixed(2) ?? 'No'} times total payout, ${sats(stake)} paper stake`}`);
       }
     }
   }
@@ -266,7 +269,7 @@ function demoPrice(step:number){return 82_420+16*Math.sin(step*.017)+7*Math.sin(
 function switchMode(next:'live'|'demo'){
   generation++;mode=next;startedAt=Date.now();
   clearInterval(pollTimer);clearTimeout(retryTimer);clearInterval(demoTimer);websocket?.close();websocket=null;
-  ticks=[];trades=[];balance=10_000;center=0;receivedAt=0;retryCount=0;lastPoll=0;transport='none';polling=false;hoverKey=null;clockOffset=0;clockSet=false;$('trade-tooltip').hidden=true;
+  ticks=[];trades=[];balance=INITIAL_BALANCE_SATS;center=0;receivedAt=0;retryCount=0;lastPoll=0;transport='none';polling=false;hoverKey=null;clockOffset=0;clockSet=false;$('trade-tooltip').hidden=true;
   for(const cell of cells.values())cell.button.remove();cells.clear();
   $('chart-empty').hidden=false;$('chart-empty').querySelector('strong')!.textContent='Finding the pulse…';$('chart-empty').querySelector('p')!.textContent='Connecting to public BTC/USDT prices.';
   if(next==='demo'){
@@ -277,11 +280,11 @@ function switchMode(next:'live'|'demo'){
   updateInterface(marketNow());
 }
 document.querySelectorAll<HTMLButtonElement>('[data-band]').forEach(button=>button.addEventListener('click',()=>{band=Number(button.dataset.band);document.querySelectorAll('[data-band]').forEach(b=>b.classList.toggle('active',b===button));hoverKey=null;$('trade-tooltip').hidden=true;}));
-document.querySelectorAll<HTMLButtonElement>('[data-stake]').forEach(button=>button.addEventListener('click',()=>{stake=Number(button.dataset.stake);document.querySelectorAll('[data-stake]').forEach(b=>b.classList.toggle('active',b===button));announce(`${dollars(stake/100)} per paper trade`);}));
+document.querySelectorAll<HTMLButtonElement>('[data-stake]').forEach(button=>button.addEventListener('click',()=>{stake=Number(button.dataset.stake);document.querySelectorAll('[data-stake]').forEach(b=>b.classList.toggle('active',b===button));announce(`${sats(stake)} per paper trade`);}));
 $('demo-mode').addEventListener('click',()=>{if(mode!=='demo'){switchMode('demo');toast('New paper session · simulated prices');}});
 $('live-mode').addEventListener('click',()=>{if(mode!=='live'){switchMode('live');toast('New paper session · connecting to Binance');}});
 $('empty-demo').addEventListener('click',()=>switchMode('demo'));
-$('reset').addEventListener('click',()=>{trades=[];balance=10_000;updateInterface(marketNow());toast('Paper balance reset to $100');});
+$('reset').addEventListener('click',()=>{trades=[];balance=INITIAL_BALANCE_SATS;updateInterface(marketNow());toast(`Paper balance reset to ${sats(INITIAL_BALANCE_SATS)}`);});
 window.addEventListener('pagehide',()=>{generation++;websocket?.close();clearInterval(pollTimer);clearInterval(demoTimer);clearTimeout(retryTimer);});
 window.setInterval(()=>updateInterface(marketNow()),1000);
 switchMode(new URLSearchParams(location.search).get('feed')==='demo'?'demo':'live');resize();requestAnimationFrame(frame);

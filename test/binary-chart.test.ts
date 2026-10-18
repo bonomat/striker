@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseTrade, resolveTrade, expiryColumns, illustrativeMultiplier, type PaperTrade } from '../experiments/binary-chart/model.js';
 
 const trade = (): PaperTrade => ({ id: 1, lower: 100, upper: 110, expiry: 10_000,
-  placedAt: 1000, stakeCents: 100, payoutCents: 320, multiplier: 3.2, status: 'open' });
+  placedAt: 1000, stakeSats: 100, payoutSats: 320, multiplier: 3.2, status: 'open' });
 
 test('binary chart uses the first actual expiry tick, not an earlier touch or a later recovery', () => {
   const ticks = [{ time: 9000, price: 105 }, { time: 10_010, price: 99 }, { time: 10_100, price: 105 }];

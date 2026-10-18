@@ -1,7 +1,7 @@
 export interface Tick { time: number; price: number }
 export interface PaperTrade {
   id: number; lower: number; upper: number; expiry: number; placedAt: number;
-  stakeCents: number; payoutCents: number; multiplier: number;
+  stakeSats: number; payoutSats: number; multiplier: number;
   status: 'open' | 'won' | 'lost' | 'void'; settlementPrice?: number;
 }
 
