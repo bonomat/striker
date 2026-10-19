@@ -30,7 +30,10 @@ import { WalletAddress } from "./WalletAddress.js";
 import { SwapDetails } from "./SwapDetails.js";
 import { HowItWorks } from "./HowItWorks.js";
 import { ProtocolPage } from "./ProtocolPage.js";
+import { TradingView } from "./TradingView.js";
 import { walletSession } from "./wallet-session.js";
+
+const currentPage = () => window.location.hash === "#/protocol" ? "protocol" : window.location.hash === "#/pro" ? "pro" : "swap";
 
 const short = (text: string) => `${text.slice(0, 9)}…${text.slice(-6)}`;
 const errorMessage = (error: unknown) =>
@@ -169,17 +172,17 @@ function Modal({
 }
 
 export default function App() {
-  const [page, setPage] = useState(() => window.location.hash === "#/protocol" ? "protocol" : "swap");
+  const [page, setPage] = useState(currentPage);
   useEffect(() => {
     const navigate = () => {
-      setPage(window.location.hash === "#/protocol" ? "protocol" : "swap");
+      setPage(currentPage());
       window.scrollTo(0, 0);
     };
     window.addEventListener("hashchange", navigate);
     return () => window.removeEventListener("hashchange", navigate);
   }, []);
   useEffect(() => {
-    document.title = page === "protocol" ? "Protocol · Striker" : "Striker · Swap on Arkade";
+    document.title = page === "protocol" ? "Protocol · Striker" : page === "pro" ? "Pro Trading · Striker" : "Striker · Swap on Arkade";
   }, [page]);
   const [config, setConfig] = useState<AppConfig | null>(null),
     [configError, setConfigError] = useState("");
@@ -701,7 +704,7 @@ export default function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${page === "pro" ? "pro-shell" : ""}`}>
       <header className="header">
         <a className="brand" href="#/" aria-label="Striker home">
           <span className="brand-mark">
@@ -715,6 +718,7 @@ export default function App() {
           <a className={page === "swap" ? "nav-active" : ""} href="#/" aria-current={page === "swap" ? "page" : undefined} onClick={() => setModal(null)}>
             Swap
           </a>
+          <a className={page === "pro" ? "nav-active" : ""} href="#/pro" aria-current={page === "pro" ? "page" : undefined} onClick={() => setModal(null)}>Pro</a>
           <a className={page === "protocol" ? "nav-active" : ""} href="#/protocol" aria-current={page === "protocol" ? "page" : undefined} onClick={() => setModal(null)}>Protocol</a>
           <button onClick={() => setModal("activity")}>
             Activity
@@ -747,7 +751,23 @@ export default function App() {
         </div>
       </header>
       <main className="main-content">
-        {page === "protocol" ? <ProtocolPage assetSymbol={asset.symbol} bitcoinToToken={reverse} /> : <>
+        {page === "protocol" ? <ProtocolPage assetSymbol={asset.symbol} bitcoinToToken={reverse} /> : page === "pro" ? <TradingView
+          asset={asset} connected={!!account} balanceReady={!!balance}
+          btcBalance={BigInt(balance?.available ?? 0)} tokenBalance={availableAsset}
+          availableSend={availableSend}
+          reverse={reverse} setDirection={(selling) => {
+            if (selling === reverse) return;
+            setReverse(selling); setAmount(""); setQuote(null); setQuoteError("");
+          }}
+          amount={amount} setAmount={setAmount} percentage={percentage}
+          quote={quote} quoting={quoting} expires={expires} history={history}
+          locked={busy || !!pending} cta={cta} disabled={ctaDisabled || busy}
+          error={configError || amountError || quoteError || balanceError}
+          onReview={primaryClick} onRefreshQuote={() => setQuoteNonce(value => value + 1)}
+          onRefreshBalance={() => void refreshBalance()}
+          onReceive={() => { setWalletError(""); setModal(account ? "receive" : "wallet"); }}
+          onInspect={inspect} onActivity={() => setModal("activity")} pending={pending}
+        /> : <>
         <section className="hero" aria-labelledby="hero-title">
           <div className="eyebrow">
             <span />

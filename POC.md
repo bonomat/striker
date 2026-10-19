@@ -457,6 +457,12 @@ just web mutinynet local
 For local regtest, use `just setup`, `just start`, and `just web`. The browser
 wallet is separate from the CLI wallet: create one and fund its Receive address,
 or explicitly import an existing Arkade private key through the wallet dialog.
+Choose **Pro** in the navigation (or open `/#/pro`) for the trading terminal.
+It shares the swap screen's wallet, signed quotes, review and recovery flow.
+The chart shows this wallet's settled executions for the configured asset;
+the liquidity panel shows the current requested quote, not an order book.
+Buy BTC spends the configured token; Sell BTC spends BTC. Neither view places
+resting orders or reserves maker inventory before execution.
 The server never reads or serves `.taker/private-key`. Browser keys are encrypted
 with the chosen password in local storage. While unlocked, **Download recovery key**
 saves an unencrypted JSON file containing the private key and public identity.
