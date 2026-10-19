@@ -223,6 +223,7 @@ export default function App() {
   const [lifecycle, setLifecycle] = useState<WalletLifecycleStatus | null>(null);
   const [maintenancePending, setMaintenancePending] = useState(false);
   const [maintenanceError, setMaintenanceError] = useState("");
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const [autoRenew, setAutoRenew] = useState(() => {
     try { return localStorage.getItem('striker.auto-renew') !== 'false'; } catch { return true; }
   });
@@ -311,6 +312,7 @@ export default function App() {
       ]);
       setBalance(current); setLegacyBalance(previous);
       setLifecycle(lifecycle); setMaintenancePending(!!maintenance);
+      if (maintenance?.lastError) setMaintenanceError(current => current || maintenance.lastError!);
       setBalanceError("");
     } catch {
       setBalanceError("Balance unavailable. Try refreshing.");
@@ -319,16 +321,20 @@ export default function App() {
       setBalanceRefreshing(false);
     }
   }, [account]);
-  const maintainDeposits = useCallback(async () => {
+  const maintainDeposits = useCallback(async (resume = false) => {
     if (!account || maintenanceRunning.current) return;
     maintenanceRunning.current = true; lastMaintenanceAttempt.current = Date.now();
-    setWalletAction(true); setMaintenanceError(''); setQuote(null);
+    setWalletAction(true); setMaintenanceBusy(true); setMaintenanceError(''); setQuote(null);
     try {
-      await withWalletLock(account, () => account.client.maintainWallet(account.maintenanceStore));
+      await withWalletLock(account, () => account.client.maintainWallet(account.maintenanceStore, { retryUnsettled: resume }));
       setMaintenancePending(false);
     } catch (error) { setMaintenanceError(errorMessage(error)); }
     finally {
-      await refreshBalance(); setWalletAction(false); maintenanceRunning.current = false;
+      // Balance providers can be slow. Never leave the controls stuck busy after
+      // the operation itself has already failed or completed.
+      setMaintenancePending(!!await account.maintenanceStore.get().catch(() => true));
+      setWalletAction(false); setMaintenanceBusy(false); maintenanceRunning.current = false;
+      void refreshBalance();
     }
   }, [account, refreshBalance]);
   useEffect(() => {
@@ -788,9 +794,9 @@ export default function App() {
         </div>
       </header>
       <main className="main-content">
-        {account && page !== 'protocol' && (walletAction || maintenancePending || maintenanceError || lifecycle?.recoverable || lifecycle?.expiring || lifecycle?.awaitingSweep) ?
+        {account && page !== 'protocol' && (maintenanceBusy || maintenancePending || maintenanceError || lifecycle?.recoverable || lifecycle?.expiring || lifecycle?.awaitingSweep) ?
           <button className="wallet-lifecycle-banner" onClick={() => setModal('wallet')}>
-            <span>{walletAction ? 'Renewing wallet deposits…' : maintenanceError ? 'Wallet maintenance needs attention' : maintenancePending ? 'Wallet maintenance is pending' : lifecycle?.recoverable ? 'Expired wallet deposits need recovery' : lifecycle?.awaitingSweep ? 'Expired deposits are waiting for the Arkade sweep' : 'Wallet deposits are nearing expiry'}</span>
+            <span>{maintenanceBusy ? 'Renewing wallet deposits…' : maintenanceError ? 'Wallet maintenance needs attention' : maintenancePending ? 'Wallet maintenance is pending' : lifecycle?.recoverable ? 'Expired wallet deposits need recovery' : lifecycle?.awaitingSweep ? 'Expired deposits are waiting for the Arkade sweep' : 'Wallet deposits are nearing expiry'}</span>
             <strong>View wallet ↗</strong>
           </button> : null}
         {page === "protocol" ? <ProtocolPage assetSymbol={asset.symbol} bitcoinToToken={reverse} /> : page === "pro" ? <TradingView
@@ -1116,10 +1122,10 @@ export default function App() {
                 error={balanceError}
                 refresh={() => void refreshBalance()}
               />
-              <WalletLifecycle status={lifecycle} pending={maintenancePending} busy={walletAction}
+              <WalletLifecycle status={lifecycle} pending={maintenancePending} busy={maintenanceBusy}
                 error={maintenanceError} autoRenew={autoRenew} blocked={maintenanceBlocked || busy}
                 onAutoRenew={enabled => { setAutoRenew(enabled); try { localStorage.setItem('striker.auto-renew', String(enabled)); } catch { /* Session preference still applies. */ } }}
-                onMaintain={() => void maintainDeposits()} />
+                onMaintain={() => void maintainDeposits(maintenancePending)} />
               <p className="small-print">
                 {sessionRemembered
                   ? "Stays unlocked in this tab until you lock it or close the tab."

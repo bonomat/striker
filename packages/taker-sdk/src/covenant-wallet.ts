@@ -18,11 +18,11 @@ export class CovenantWallet {
       awaitingSweep: states.filter(c => c.state === 'awaiting-sweep').length };
   }
   /** Call under the same wallet lock as swaps, with no pending authorizations. */
-  async maintain(store: MaintenanceStore) {
+  async maintain(store: MaintenanceStore, options: { retryUnsettled?: boolean } = {}) {
     if (!this.legacy.settle || !this.legacy.getAddress || !this.legacy.getVtxos || !this.legacy.getContractManager)
       throw new Error('This wallet does not support batch recovery and renewal');
     return maintainCovenant({ chain: this.chain, wallet: this.legacy as IWallet, identity: this.identity,
-      sourceTree: this.contract.tree, destination: this.contract.address, store });
+      sourceTree: this.contract.tree, destination: this.contract.address, store, ...options });
   }
   async getBalance(): Promise<WalletBalance> {
     return this.balanceFor(await covenantInventory(this.chain, this.contract.tree), 330);

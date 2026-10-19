@@ -91,7 +91,7 @@ main(async () => {
     if (command === 'maintain') {
       const client = new TakerClient({ chain, actor, maintenanceStore, strikerUrl: required(local.config.striker, 'striker'),
         store: { async get() { return undefined; }, async put() { throw new Error('Maintenance cannot create swap records'); }, list } });
-      console.log(JSON.stringify(await client.maintainWallet(maintenanceStore))); return;
+      console.log(JSON.stringify(await client.maintainWallet(maintenanceStore, { retryUnsettled: true }))); return;
     }
     let file = command === 'quote' ? (typeof flags.out === 'string' ? flags.out : undefined) : quoteFile();
     if (command === 'quote' && file && existsSync(file)) throw new Error('Quote file already exists');

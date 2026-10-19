@@ -490,7 +490,13 @@ The store must persist pending `MaintenanceOperation` records and archive comple
 receipts separately. Recovery first batch-settles explicit covenant inputs into
 the owner's standard wallet, preserving assets, then sends an exact persisted
 transaction back into the swap covenant. Never clear a pending journal: an
-uncertain batch outcome stops automatic retries and needs input/chain inspection;
+uncertain batch outcome stops automatic retries. An explicit
+`maintainWallet(store, { retryUnsettled: true })` (the browser's **Resume maintenance**
+button) first reconciles the recorded inputs, then owner-signs a cancellation of
+any queued intent before retrying exactly those same inputs. Original settlement
+errors are retained in the journal. New operations recover swept deposits first,
+or renew only expiring deposits; healthy deposits remain outside the operation.
+Partly spent or missing input sets still require inspection;
 a saved return transaction can be resumed without selecting new inputs. The
 current implementation requires zero batch and offchain fees.
 

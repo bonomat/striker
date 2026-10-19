@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { asset, Extension, SingleKey, Transaction, type VirtualCoin, type IWallet, type Identity } from '@arkade-os/sdk';
+import { ArkError, asset, Extension, SingleKey, Transaction, type VirtualCoin, type IWallet, type Identity } from '@arkade-os/sdk';
 import { CovenantWallet, TakerClient, hasPendingAuthorization, type SavedSwap } from '../packages/taker-sdk/src/index.js';
 import { decodeBase64, depositState, epochPacket, maintainCovenant, type MaintenanceOperation, type Chain, reusableTakerContract, hex } from '../packages/protocol/src/browser.js';
 import { publicKey, secret, fixture } from './fixtures.js';
@@ -57,6 +57,57 @@ test('maintenance persists exact inputs before settlement and refuses automatic 
   await assert.rejects(maintainCovenant(options), /Connection interrupted/);
   await assert.rejects(maintainCovenant(options), /uncertain outcome/);
   assert.equal(calls, 1);
+});
+
+test('recovery selects expired deposits without locking a healthy BTC deposit', async () => {
+  const chain = chainBase(), tree = reusableTakerContract(chain, publicKey(2)).tree;
+  const expired = coin({ isSwept: true, value: 330 }), healthy = coin({ txid: 'bb'.repeat(32), value: 500000 });
+  chain.indexer = { async getVtxos() { return { vtxos: [healthy, expired] }; } } as unknown as Chain['indexer'];
+  chain.ark = { async getInfo() { return { fees: { txFeeRate: '0', intentFee: {} } }; } } as Chain['ark'];
+  let saved: MaintenanceOperation | undefined;
+  const wallet = { async getAddress() { return tree.address('tark', chain.server).encode(); },
+    async getContractManager() { return { async createContract() {}, async annotateVtxos(vtxos: VirtualCoin[]) { return vtxos; } }; },
+    async settle({ inputs }: { inputs: VirtualCoin[] }) { assert.deepEqual(inputs, [expired]); throw new Error('test provider interrupted'); },
+  } as unknown as IWallet;
+  await assert.rejects(maintainCovenant({ chain, wallet, identity: {} as Identity, sourceTree: tree, destination: await wallet.getAddress(),
+    store: { async get() { return saved; }, async put(op) { saved = structuredClone(op); } } }), /test provider interrupted/);
+  assert.equal(saved!.amount, 330); assert.deepEqual(saved!.inputs, [{ txid: expired.txid, vout: expired.vout }]);
+  assert.equal(saved!.lastError, 'test provider interrupted');
+});
+
+test('explicit resume signs cancellation and retries only the exact recorded inputs', async () => {
+  for (const mode of ['cancelled', 'absent', 'denied']) {
+    const chain = chainBase(), tree = reusableTakerContract(chain, publicKey(2)).tree;
+    const parent = new Transaction({ allowUnknownInputs: true, allowUnknownOutputs: true });
+    parent.addInput({ txid: 'ab'.repeat(32), index: 0 }); parent.addOutput({ script: tree.pkScript, amount: 1000n });
+    const input = coin({ txid: parent.id, script: hex(tree.pkScript), isSwept: true, assets: [
+      { assetId: asset.AssetId.fromBytes(fixture().deposit.wantAsset).toString(), amount: 803613750n },
+      { assetId: asset.AssetId.create('22'.repeat(32), 0).toString(), amount: 400n },
+    ] });
+    const address = tree.address('tark', chain.server).encode();
+    let saved: MaintenanceOperation = { version: 1, network: 'regtest', source: hex(tree.pkScript), destination: address, ownerAddress: address,
+      inputs: [{ txid: input.txid, vout: input.vout }], amount: 1000, startedAt: now };
+    let cancellations = 0, settlements = 0;
+    chain.indexer = { async getVtxos() { return { vtxos: [input] }; }, async getVirtualTxs() { return { txs: [Buffer.from(parent.toPSBT()).toString('base64')] }; } } as unknown as Chain['indexer'];
+    chain.ark = {
+      async getInfo() { return { fees: { txFeeRate: '0', intentFee: {} } }; },
+      async deleteIntent({ proof, message }: { proof: string; message: { type: string } }) {
+        cancellations++; assert.equal(message.type, 'delete'); assert.equal(saved.cancellationProof, proof);
+        assert.ok(Transaction.fromPSBT(decodeBase64(proof)).getInput(1).tapScriptSig?.length, 'cancellation proves owner control');
+        if (mode === 'absent') throw new ArkError(100, 'no matching intents found for intent proof', 'INVALID_INTENT_PROOF');
+        if (mode === 'denied') throw new Error('cancellation denied');
+      },
+    } as unknown as Chain['ark'];
+    const wallet = { async getAddress() { return address; }, async getContractManager() { return {
+      async createContract() {}, async annotateVtxos() { return [{ ...input, tapTree: tree.encode(), forfeitTapLeafScript: tree.leaves[1]!, intentTapLeafScript: tree.leaves[1]! }]; },
+    }; }, async settle({ inputs }: { inputs: VirtualCoin[] }) {
+      settlements++; assert.equal(cancellations, 1); assert.deepEqual(inputs.map(({txid, vout}) => ({txid, vout})), saved.inputs);
+      throw new Error('retry reached provider');
+    } } as unknown as IWallet;
+    await assert.rejects(maintainCovenant({ chain, wallet, identity: SingleKey.fromPrivateKey(secret(2)), sourceTree: tree, destination: address, retryUnsettled: true,
+      store: { async get() { return saved; }, async put(op) { saved = structuredClone(op); } } }), mode === 'denied' ? /cancellation denied/ : /retry reached provider/);
+    assert.equal(cancellations, 1); assert.equal(settlements, mode === 'denied' ? 0 : 1);
+  }
 });
 
 test('maintenance refuses unswept expired inputs and unsupported fee policies before settlement', async () => {

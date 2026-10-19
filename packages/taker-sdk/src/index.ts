@@ -114,7 +114,7 @@ export class TakerClient {
   constructor(readonly options: TakerOptions) {
     this.strikerUrl = serviceURL(options.strikerUrl);
   }
-  async maintainWallet(store: import('@satora/striker-protocol/browser').MaintenanceStore) {
+  async maintainWallet(store: import('@satora/striker-protocol/browser').MaintenanceStore, options: { retryUnsettled?: boolean } = {}) {
     if (this.active.size) throw new Error('Wait for the current swap operation before renewing deposits');
     return this.exclusive('wallet-maintenance', async () => {
       if (!this.options.store.list) throw new Error('Wallet maintenance requires a swap store that lists pending authorizations');
@@ -123,7 +123,7 @@ export class TakerClient {
         throw new Error('Resolve pending swaps or cancel their authorizations before renewing deposits');
       const { actor, chain } = this.options;
       if (!actor.identity) throw new Error('Wallet maintenance requires an owner signing identity');
-      return new CovenantWallet(chain, actor.publicKey, actor.identity!, actor.wallet).maintain(store);
+      return new CovenantWallet(chain, actor.publicKey, actor.identity!, actor.wallet).maintain(store, options);
     });
   }
 

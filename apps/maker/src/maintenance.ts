@@ -19,6 +19,7 @@ export async function maintainMakerPool(file: string, chain: Chain, wallet: IWal
     const states = inventory.map(c => c.state);
     if (states.includes('awaiting-sweep')) throw new Error('Maker deposits expired and are waiting for the Arkade sweep');
     if (!states.some(s => s === 'recoverable' || s === 'expiring')) return false;
+    if (inventory.length !== 1) throw new Error('Maker maintenance requires exactly one deposit tip; consolidate ambiguous pools before renewing');
     // New lineage revokes all outstanding old quotes even though the rate is unchanged.
     const nextState = { ...state, deposit: depositJSON({ ...deposit, lineage: randomBytes(32) }) };
     journal = { sourceState: state, nextState };

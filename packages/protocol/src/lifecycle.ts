@@ -1,4 +1,4 @@
-import { ArkAddress, Extension, Transaction, VtxoScript, asset, buildOffchainTx, canSpendOffchain, contractHandlers,
+import { ArkAddress, ArkError, EsploraProvider, Extension, Intent, Transaction, VtxoScript, asset, buildOffchainTx, canSpendOffchain, contractHandlers, withPrevTxs,
   isPastExpiry, type ContractHandler, type IWallet, type Identity, type TapLeafScript, type VirtualCoin } from '@arkade-os/sdk';
 import { bytes, hex } from './wire.js';
 import { decodeBase64, encodeBase64 } from './encoding.js';
@@ -53,6 +53,9 @@ export interface MaintenanceOperation {
   settlementTxid?: string;
   transfer?: PreparedOwnerTransfer;
   completed?: boolean;
+  lastError?: string;
+  cancellationProof?: string;
+  cancelledAt?: number;
 }
 export interface MaintenanceStore {
   /** Return only the pending operation; archive completed receipts separately. */
@@ -94,6 +97,8 @@ export async function maintainCovenant(options: {
   chain: Chain; wallet: IWallet; identity: Pick<Identity, 'sign'>;
   sourceTree: VtxoScript; destination: string; store: MaintenanceStore;
   packets?: Parameters<typeof Extension.create>[0];
+  /** Explicit resume only: cancel an old queued intent before retrying its exact inputs. */
+  retryUnsettled?: boolean;
 }) {
   const { chain, wallet, identity, sourceTree, destination, store } = options;
   const source = hex(sourceTree.pkScript), decoded = ArkAddress.decode(destination);
@@ -104,15 +109,20 @@ export async function maintainCovenant(options: {
     throw new Error('Maintenance journal belongs to another wallet or covenant');
   if (operation?.completed) return operation;
   if (!operation) {
-    const inventory = await covenantInventory(chain, sourceTree), coins = inventory.map(c => c.coin);
+    const inventory = await covenantInventory(chain, sourceTree);
+    // Recover swept deposits separately; don't lock healthy funds in the batch.
+    const due = inventory.filter(c => c.state === 'recoverable');
+    const selected = due.length ? due : inventory.filter(c => c.state === 'expiring');
+    const coins = selected.slice(0, 16).map(c => c.coin);
+    if (!coins.length && inventory.some(c => c.state === 'awaiting-sweep')) throw new Error('Expired deposits are waiting for the Arkade sweep; recovery is not available yet');
+    if (!coins.length) throw new Error('No deposits need recovery or renewal');
     if (!coins.length || coins.length > 16) throw new Error('Maintenance requires between 1 and 16 deposits');
-    if (inventory.some(c => c.state === 'awaiting-sweep')) throw new Error('Expired deposits are waiting for the Arkade sweep; recovery is not available yet');
     operation = { version: 1, network: chain.settings.network, source, destination, ownerAddress,
       inputs: coins.map(({ txid, vout }) => ({ txid, vout })), amount: coins.reduce((sum, c) => sum + c.value, 0), assets: assetTotals(coins) };
     if (!Number.isSafeInteger(operation.amount) || operation.amount <= 0) throw new Error('Invalid maintenance value');
     await store.put(operation);
   }
-  if (operation.startedAt && !operation.settlementTxid) {
+  if ((operation.startedAt || operation.cancelledAt) && !operation.settlementTxid) {
     // Recover a lost batch response using ONLY the recorded inputs and their
     // authoritative settlement ID. Never infer success from a wallet balance.
     const raw = await chain.indexer.getVtxos({ scripts: [source] });
@@ -121,7 +131,30 @@ export async function maintainCovenant(options: {
     if (commitment && inputs.every(c => c?.settledBy === commitment)) {
       operation.assets ??= assetTotals(inputs.map(c => c!));
       operation.settlementTxid = commitment; await store.put(operation);
-    } else throw new Error('A maintenance settlement has an uncertain outcome. Inspect its recorded inputs before retrying; funds may already be in the previous wallet');
+    } else if (options.retryUnsettled && inputs.every(c => c && depositState(c) !== 'spent' && !c.isUnrolled)) {
+      const manager = await wallet.getContractManager();
+      await manager.createContract({ type: OWNER_CONTRACT, params: { tree: hex(sourceTree.encode()) },
+        script: source, address: sourceTree.address('tark', chain.server).encode() });
+      const annotated = await manager.annotateVtxos(inputs.map(c => c!));
+      const message: Intent.DeleteMessage = { type: 'delete', expire_at: 0 };
+      if (!operation.cancellationProof) {
+        const withParents = await withPrevTxs(annotated, chain.indexer, new EsploraProvider(chain.settings.esploraUrl));
+        operation.cancellationProof = encodeBase64((await identity.sign(Intent.create(message, withParents, []))).toPSBT());
+        await store.put(operation);
+      }
+      try { await chain.ark.deleteIntent({ proof: operation.cancellationProof, message }); }
+      catch (error) {
+        // arkd reports this after validating the proof when no queued intent matches.
+        // A batch already in progress still competes for the SAME input set; never
+        // replace those inputs or infer completion from this response.
+        if (!(error instanceof ArkError && error.name === 'INVALID_INTENT_PROOF' && error.message.includes('no matching intents found for intent proof'))) {
+          operation.lastError = error instanceof Error ? error.message : 'Intent cancellation failed';
+          await store.put(operation); throw error;
+        }
+      }
+      operation.cancelledAt = Date.now(); operation.startedAt = undefined;
+      await store.put(operation);
+    } else throw new Error(`A maintenance settlement has an uncertain outcome. Resume to check and cancel its queued intent before retrying the same deposits.${operation.lastError ? ` Previous error: ${operation.lastError}` : ''}`);
   }
   if (!operation.settlementTxid) {
     const all = await covenantCoins(chain, sourceTree);
@@ -137,14 +170,20 @@ export async function maintainCovenant(options: {
       script: source, address: sourceTree.address('tark', chain.server).encode() });
     const inputs = await manager.annotateVtxos(coins.map(c => c!));
     operation.startedAt = Date.now(); await store.put(operation);
-    operation.settlementTxid = await wallet.settle({ inputs, outputs: [{ address: ownerAddress, amount: BigInt(operation.amount) }] });
+    try {
+      operation.settlementTxid = await wallet.settle({ inputs, outputs: [{ address: ownerAddress, amount: BigInt(operation.amount) }] });
+    } catch (error) {
+      operation.lastError = error instanceof Error ? error.message : 'Settlement failed';
+      await store.put(operation); throw error;
+    }
     await store.put(operation);
   }
   if (!operation.transfer) {
     const commitment = operation.settlementTxid;
+    const ownerScript = hex(ArkAddress.decode(ownerAddress).pkScript);
     const coins = await waitFor(async () => {
       const vtxos = await wallet.getVtxos();
-      const matching = vtxos.filter(c => c.commitmentTxIds?.includes(commitment) && canSpendOffchain(c, { timestamp: new Date() }));
+      const matching = vtxos.filter(c => c.script === ownerScript && c.commitmentTxIds?.includes(commitment) && canSpendOffchain(c, { timestamp: new Date() }));
       return matching.length === 1 && matching[0]!.value === operation!.amount ? matching : undefined;
     }, 'recovered owner output');
     const coin = coins[0]!;
