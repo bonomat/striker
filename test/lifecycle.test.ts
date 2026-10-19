@@ -76,7 +76,7 @@ test('recovery selects expired deposits without locking a healthy BTC deposit', 
 });
 
 test('explicit resume signs cancellation and retries only the exact recorded inputs', async () => {
-  for (const mode of ['cancelled', 'absent', 'denied']) {
+  for (const mode of ['cancelled', 'absent', 'denied', 'mixed']) {
     const chain = chainBase(), tree = reusableTakerContract(chain, publicKey(2)).tree;
     const parent = new Transaction({ allowUnknownInputs: true, allowUnknownOutputs: true });
     parent.addInput({ txid: 'ab'.repeat(32), index: 0 }); parent.addOutput({ script: tree.pkScript, amount: 1000n });
@@ -87,8 +87,13 @@ test('explicit resume signs cancellation and retries only the exact recorded inp
     const address = tree.address('tark', chain.server).encode();
     let saved: MaintenanceOperation = { version: 1, network: 'regtest', source: hex(tree.pkScript), destination: address, ownerAddress: address,
       inputs: [{ txid: input.txid, vout: input.vout }], amount: 1000, startedAt: now };
+    const healthy = coin({ txid: 'cd'.repeat(32), value: 500000 });
+    if (mode === 'mixed') {
+      saved.inputs.push({ txid: healthy.txid, vout: healthy.vout }); saved.amount += healthy.value;
+      saved.cancellationProof = 'old invalid mixed-input proof';
+    }
     let cancellations = 0, settlements = 0;
-    chain.indexer = { async getVtxos() { return { vtxos: [input] }; }, async getVirtualTxs() { return { txs: [Buffer.from(parent.toPSBT()).toString('base64')] }; } } as unknown as Chain['indexer'];
+    chain.indexer = { async getVtxos() { return { vtxos: mode === 'mixed' ? [input, healthy] : [input] }; }, async getVirtualTxs() { return { txs: [Buffer.from(parent.toPSBT()).toString('base64')] }; } } as unknown as Chain['indexer'];
     chain.ark = {
       async getInfo() { return { fees: { txFeeRate: '0', intentFee: {} } }; },
       async deleteIntent({ proof, message }: { proof: string; message: { type: string } }) {
@@ -101,6 +106,10 @@ test('explicit resume signs cancellation and retries only the exact recorded inp
     const wallet = { async getAddress() { return address; }, async getContractManager() { return {
       async createContract() {}, async annotateVtxos() { return [{ ...input, tapTree: tree.encode(), forfeitTapLeafScript: tree.leaves[1]!, intentTapLeafScript: tree.leaves[1]! }]; },
     }; }, async settle({ inputs }: { inputs: VirtualCoin[] }) {
+      if (mode === 'mixed') {
+        assert.equal(saved.amount, 1000); assert.equal(saved.supersededInputs?.length, 2);
+        assert.deepEqual(saved.cancellationInputs, [{ txid: input.txid, vout: input.vout }]);
+      }
       settlements++; assert.equal(cancellations, 1); assert.deepEqual(inputs.map(({txid, vout}) => ({txid, vout})), saved.inputs);
       throw new Error('retry reached provider');
     } } as unknown as IWallet;
