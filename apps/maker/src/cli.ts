@@ -5,12 +5,14 @@ import path from 'node:path';
 import { asset } from '@arkade-os/sdk';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { BinancePricing } from './pricing.js';
+import { maintainMakerPool } from './maintenance.js';
 import { args, assetId, connectChain, createWallet, decimal, depositJSON, epochOf, epochPacket,
   fundedCoin, hex, HttpError, listen, main, makerContract, nowSeconds, object, offerJSON,
   parseDeposit, parseMarketRequest, port, readJSON, required, secretKey, signQuote, writeJSON,
-  coinsAt, loadConfig, parseDirection, type Chain, type Deposit } from '@satora/striker-protocol';
+  coinsAt, covenantCoins, depositState, loadConfig, parseDirection, type Chain, type Deposit } from '@satora/striker-protocol';
 
 const HELP = `maker init | address | balance [--state FILE]
+maker maintain  (recover swept pools or renew pools expiring within six hours)
 maker deposit --asset-id HEX --sats SATS --rate-numerator N --rate-denominator D [--state FILE]
 maker deposit --direction btc-to-token --asset-id HEX --tokens UNITS --sats SATS --rate-numerator N --rate-denominator D
 maker serve [--state FILE] [--host 127.0.0.1] [--port 4101] [--ttl-seconds 120]
@@ -38,7 +40,7 @@ main(async () => {
   const parsed = args(['asset-id', 'sats', 'tokens', 'direction', 'reverse-state', 'rate-numerator', 'rate-denominator', 'state', 'host', 'port', 'ttl-seconds']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'address', 'balance', 'deposit', 'serve'].includes(command)) throw new Error(HELP);
+  if (!['init', 'address', 'balance', 'deposit', 'serve', 'maintain'].includes(command)) throw new Error(HELP);
   const local = loadConfig('maker', typeof flags['config-dir'] === 'string' ? flags['config-dir'] : undefined);
   const key = secretKey('maker', local.keyDirectory);
   if (command === 'init') {
@@ -50,7 +52,8 @@ main(async () => {
   const chain = await connectChain();
   if (command === 'serve') {
     const reverseFile = typeof flags['reverse-state'] === 'string' ? flags['reverse-state'] : path.join(local.directory, 'reverse-deposit.json');
-    const states = [...new Set([stateFile, reverseFile])].filter(existsSync).map(file => loadState(file, chain, key));
+    const files = [...new Set([stateFile, reverseFile])].filter(existsSync);
+    const states = files.map(file => loadState(file, chain, key));
     if (!states.length) throw new Error('Create maker liquidity before serving');
     const ttl = Number(flags['ttl-seconds'] ?? local.config.ttlSeconds);
     if (!Number.isInteger(ttl) || ttl < 1 || ttl > 300) throw new Error('TTL must be 1..300 seconds');
@@ -60,18 +63,45 @@ main(async () => {
     if (livePricing && (typeof pricing.assetDecimals !== 'number' ||
         states.some(s => hex(s.deposit.wantAsset) !== assetId(pricing.assetId))))
       throw new Error('Binance pricing must specify the decimals and exact asset ID of all loaded pools');
-    await listen('maker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4101),
+    const maintenance = local.config.maintenance === undefined ? {} : object(local.config.maintenance);
+    const enabled = maintenance.enabled !== false;
+    const thresholdMs = Number(maintenance.thresholdSeconds ?? 21600) * 1000;
+    const intervalMs = Number(maintenance.intervalSeconds ?? 60) * 1000;
+    if (!Number.isSafeInteger(thresholdMs) || thresholdMs < 60000 || !Number.isSafeInteger(intervalMs) || intervalMs < 10000)
+      throw new Error('Invalid maker maintenance interval or threshold');
+    let maintaining = false, maintenanceError = '', lastMaintenance: string | null = null;
+    const actor = enabled ? await createWallet(chain, key) : undefined;
+    const maintain = async () => {
+      if (!actor || maintaining) return;
+      maintaining = true;
+      try {
+        for (const file of files) await maintainMakerPool(file, chain, actor.wallet, actor.identity, thresholdMs);
+        maintenanceError = ''; lastMaintenance = new Date().toISOString();
+      } catch (error) {
+        maintenanceError = error instanceof Error ? error.message : 'Maker maintenance failed';
+        console.error(JSON.stringify({ service: 'maker-maintenance', error: maintenanceError }));
+      } finally { maintaining = false; }
+    };
+    const server = await listen('maker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4101),
       async (method, path, body) => {
         if (method === 'GET' && path === '/health') return { service: 'maker', ok: true,
-          pricing: livePricing?.status() ?? { source: 'static' } };
+          pricing: livePricing?.status() ?? { source: 'static' }, maintenance: { enabled, running: maintaining, error: maintenanceError || null, lastCheckedAt: lastMaintenance } };
         if (method !== 'POST' || path !== '/v1/quotes') throw new HttpError(404, 'Not found');
         const request = parseMarketRequest(body);
-        const state = states.find(s => parseDirection(s.deposit.direction) === parseDirection(request.direction) && hex(s.deposit.wantAsset) === request.assetId);
+        if (maintaining) throw new HttpError(503, 'Maker liquidity is being renewed; try again shortly');
+        const state = files.map(file => loadState(file, chain, key)).find(s => parseDirection(s.deposit.direction) === parseDirection(request.direction) && hex(s.deposit.wantAsset) === request.assetId);
         if (!state) throw new HttpError(422, 'Unsupported asset or swap direction');
         const { tree } = makerContract(chain, state);
         if (request.assetId !== hex(state.deposit.wantAsset)) throw new HttpError(422, 'Unsupported asset');
         const coins = await coinsAt(chain, tree);
-        if (coins.length !== 1) throw new HttpError(503, 'No unambiguous live deposit');
+        if (coins.length !== 1) {
+          const held = await covenantCoins(chain, tree);
+          if (held.some(c => ['recoverable', 'awaiting-sweep'].includes(depositState(c))))
+            throw new HttpError(503, 'Maker liquidity expired and needs recovery');
+          throw new HttpError(503, 'No unambiguous live deposit');
+        }
+        if (depositState(coins[0]!) === 'awaiting-sweep' || depositState(coins[0]!) === 'recoverable')
+          throw new HttpError(503, 'Maker liquidity expired and needs recovery');
         const coin = coins[0]!;
         const y = BigInt(request.giveAmount), reverse = state.deposit.direction === 'btc-to-token';
         let x: bigint;
@@ -87,10 +117,21 @@ main(async () => {
         const quote = { x, y, epoch: await epochOf(chain, coin), deadline: nowSeconds() + BigInt(ttl) };
         return offerJSON({ deposit: state.deposit, quote, signature: signQuote(state.deposit, quote, key) });
       });
+    const timer = enabled ? setInterval(() => void maintain(), intervalMs) : undefined;
+    server.once('close', () => { if (timer) clearInterval(timer); void actor?.wallet.dispose(); });
+    void maintain();
     return;
   }
   const actor = await createWallet(chain, key);
   try {
+    if (command === 'maintain') {
+      const files = [...new Set([stateFile, path.join(local.directory, 'reverse-deposit.json')])].filter(existsSync);
+      for (const file of files) {
+        loadState(file, chain, key);
+        console.log(JSON.stringify({ file, renewed: await maintainMakerPool(file, chain, actor.wallet, actor.identity, 21600000) }));
+      }
+      return;
+    }
     if (command === 'address') { console.log(JSON.stringify({ address: actor.address })); return; }
     if (command === 'balance') {
       let deposit = null;

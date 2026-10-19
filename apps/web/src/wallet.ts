@@ -12,7 +12,7 @@ import {
   connectChainWithSettings,
   hex,
 } from "@satora/striker-protocol/browser";
-import { CovenantWallet, TakerClient, type SavedSwap, type SwapStore } from "@satora/taker-sdk";
+import { CovenantWallet, TakerClient, type SavedSwap, type SwapStore, type MaintenanceOperation, type MaintenanceStore } from "@satora/taker-sdk";
 import type { AppConfig } from "./config.js";
 
 export const vaultStorageKey = "striker.wallet.v1";
@@ -89,8 +89,19 @@ export async function connectWallet(
     `striker.swaps:${config.network}:${chain.server.toString()}:${publicHex}`,
     changed,
   );
+  const maintenanceKey = `striker.maintenance:${config.network}:${hex(chain.server)}:${publicHex}`;
+  const maintenanceStore: MaintenanceStore = {
+    async get() { const raw = localStorage.getItem(maintenanceKey); return raw ? JSON.parse(raw) as MaintenanceOperation : undefined; },
+    async put(operation) {
+      if (operation.completed) {
+        localStorage.setItem(`${maintenanceKey}:receipt:${operation.transfer!.txid}`, JSON.stringify(operation));
+        localStorage.removeItem(maintenanceKey);
+      } else localStorage.setItem(maintenanceKey, JSON.stringify(operation));
+    },
+  };
   const client = new TakerClient({
     chain,
+    maintenanceStore,
     actor: {
       wallet,
       identity,
@@ -102,7 +113,7 @@ export async function connectWallet(
     strikerUrl: config.strikerUrl ?? `${location.origin}/api/striker`,
     store,
   });
-  return { wallet, identity, address, legacyAddress, covenant, publicHex, client, store };
+  return { wallet, identity, address, legacyAddress, covenant, publicHex, client, store, maintenanceStore };
 }
 export type ConnectedWallet = Awaited<ReturnType<typeof connectWallet>>;
 export async function withWalletLock<T>(

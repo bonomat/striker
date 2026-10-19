@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
 import path from 'node:path';
-import { CovenantWallet, TakerClient, type SavedSwap, type SwapStore } from '@satora/taker-sdk';
+import { CovenantWallet, TakerClient, type SavedSwap, type SwapStore, type MaintenanceOperation, type MaintenanceStore } from '@satora/taker-sdk';
 import { sha256 } from "@noble/hashes/sha2.js";
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, hex, main, object,
@@ -9,6 +9,7 @@ import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, 
   validateOfferFor, waitFor, writeJSON, loadConfig, parseDirection } from '@satora/striker-protocol';
 
 const HELP = `taker init | address | balance | move-legacy
+taker maintain  (recover expired deposits or renew deposits through a fresh batch)
 taker withdraw --to ARKADE_ADDRESS
 taker issue --amount UNITS [--decimals 8]  (amount is atomic units)
 taker quote [--striker URL] [--asset-id HEX] [--give-amount UNITS] [--direction token-to-btc|btc-to-token] [--out FILE]
@@ -22,7 +23,7 @@ main(async () => {
   const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'decimals', 'out', 'quote', 'quote-id', 'to']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status', 'move-legacy', 'withdraw'].includes(command)) throw new Error(HELP);
+  if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status', 'move-legacy', 'withdraw', 'maintain'].includes(command)) throw new Error(HELP);
   const local = loadConfig('taker', typeof flags['config-dir'] === 'string' ? flags['config-dir'] : undefined);
   function quoteFile(): string {
     if (typeof flags.quote === 'string') return flags.quote;
@@ -42,15 +43,27 @@ main(async () => {
     console.log(JSON.stringify(await requestJSON(`${url}/v1/swaps/${encodeURIComponent(quoteId)}`)));
     return;
   }
-  const chain = await connectChain({ checkEmulator: !['address', 'balance', 'move-legacy', 'withdraw'].includes(command) });
+  const chain = await connectChain({ checkEmulator: !['address', 'balance', 'move-legacy', 'withdraw', 'maintain'].includes(command) });
   const key = secretKey('taker', local.keyDirectory);
   const actor = await createWallet(chain, key);
   const covenant = new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet);
+  const maintenanceFile = path.join(local.directory, 'pending-maintenance.json');
+  const maintenanceStore: MaintenanceStore = {
+    async get() { return existsSync(maintenanceFile) ? readJSON(maintenanceFile) as MaintenanceOperation : undefined; },
+    async put(operation) {
+      writeJSON(maintenanceFile, operation);
+      if (operation.completed) renameSync(maintenanceFile, path.join(local.directory, `maintenance-${operation.transfer!.txid}.json`));
+    },
+  };
+  const list = () => {
+    const directory = path.join(local.directory, 'quotes');
+    return existsSync(directory) ? readdirSync(directory).filter(f => f.endsWith('.json')).map(f => readJSON(path.join(directory, f)) as SavedSwap) : [];
+  };
   try {
     if (command === 'address') { console.log(JSON.stringify({ address: covenant.contract.address, legacyAddress: actor.address })); return; }
     if (command === 'balance') {
       console.log(JSON.stringify({ role: 'taker', network: chain.settings.network, address: covenant.contract.address,
-        wallet: await covenant.getBalance(), legacyWallet: await actor.wallet.getBalance() }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+        wallet: await covenant.getBalance(), lifecycle: await covenant.getLifecycle(), maintenance: await maintenanceStore.get(), legacyWallet: await covenant.getLegacyBalance() }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
       return;
     }
     if (command === 'move-legacy') {
@@ -75,9 +88,15 @@ main(async () => {
       console.log(JSON.stringify({ assetId: result.assetId, amount: amount.toString(), decimals }));
       return;
     }
+    if (command === 'maintain') {
+      const client = new TakerClient({ chain, actor, maintenanceStore, strikerUrl: required(local.config.striker, 'striker'),
+        store: { async get() { return undefined; }, async put() { throw new Error('Maintenance cannot create swap records'); }, list } });
+      console.log(JSON.stringify(await client.maintainWallet(maintenanceStore))); return;
+    }
     let file = command === 'quote' ? (typeof flags.out === 'string' ? flags.out : undefined) : quoteFile();
     if (command === 'quote' && file && existsSync(file)) throw new Error('Quote file already exists');
     const store: SwapStore = {
+      list,
       async get(id) {
         if (!file) return undefined;
         const saved = object(readJSON(file)) as unknown as SavedSwap;
@@ -92,7 +111,7 @@ main(async () => {
     };
     const saved = command === 'quote' ? undefined : object(readJSON(file!)) as unknown as SavedSwap;
     const striker = required(flags.striker ?? saved?.striker ?? local.config.striker, 'striker');
-    const client = new TakerClient({ chain, actor: { ...actor, payoutScript: covenant.contract.tree.pkScript,
+    const client = new TakerClient({ chain, maintenanceStore, actor: { ...actor, payoutScript: covenant.contract.tree.pkScript,
       legacyPayoutScript: actor.payoutScript, signIntent: async message => schnorr.sign(sha256(message), key) }, strikerUrl: striker, store });
     if (command === 'quote') {
       const swap = await client.quote(assetId(flags['asset-id'] ?? local.config.assetId),

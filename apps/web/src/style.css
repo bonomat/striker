@@ -1713,3 +1713,12 @@ button svg {
 .wallet-withdrawal summary { cursor: pointer; }
 .wallet-withdrawal input { box-sizing: border-box; width: 100%; margin-bottom: 12px; padding: 12px; border: 1px solid #dce5d1; border-radius: 10px; background: #fcfdf9; font: inherit; }
 .legacy-wallet-funds { margin-bottom: 20px; padding: 14px; border: 1px solid #dce5d1; border-radius: 12px; }
+
+.wallet-lifecycle { margin: 22px 0; border: 1px solid #d8dfce; border-radius: 12px; padding: 18px; background: #f6f8f2; }
+.wallet-lifecycle h3 { margin: 0 0 10px; font-size: 14px; }
+.wallet-lifecycle p { font-size: 12px; line-height: 1.65; }
+.wallet-renew-toggle { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 1.5; }
+.wallet-renew-toggle input { width: 16px; height: 16px; accent-color: #718e3d; flex-shrink: 0; }
+.wallet-lifecycle-banner { display: flex; justify-content: space-between; gap: 16px; width: 100%; text-align: left; padding: 14px 18px; border: 1px solid #d8dfce; border-radius: 10px; background: #edf4e1; color: #455332; font-size: 12px; margin-top: 20px; }
+.wallet-lifecycle-banner strong { white-space: nowrap; }
+.pro-shell .wallet-lifecycle-banner { color: #e9d3a0; background: #352d20; border-color: #57492f; }

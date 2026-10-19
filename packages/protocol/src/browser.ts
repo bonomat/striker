@@ -7,3 +7,4 @@ export * from './transport.js';
 export * from './intent.js';
 export * from './intent-settlement.js';
 export * from './settlement.js';
+export * from './lifecycle.js';

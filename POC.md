@@ -463,6 +463,37 @@ The chart shows this wallet's settled executions for the configured asset;
 the liquidity panel shows the current requested quote, not an order book.
 Buy BTC spends the configured token; Sell BTC spends BTC. Neither view places
 resting orders or reserves maker inventory before execution.
+
+Arkade deposits expire. Maker services check their covenant pools every minute
+and renew within six hours of expiry; already-swept pools use the same recovery
+flow. Configure `maintenance: { enabled: false }` in the maker profile to disable
+this, or set `thresholdSeconds` (default `21600`) and `intervalSeconds` (default
+`60`). `maker maintain` runs a manual pass while the maker service is stopped.
+Quotes pause during maintenance. Each renewed maker pool gets a new lineage and
+an epoch-zero packet, invalidating the old pool's quotes.
+
+Browser wallets show expired BTC and tokens as held but unavailable, with recovery
+and renewal controls in the wallet dialog. Automatic maintenance is enabled while
+the wallet is unlocked and this tab remains open; it pauses for pending swap
+authorizations and can be disabled in the dialog. Expired intent authorizations
+stop blocking renewal after a one-minute clock margin; their history remains
+available for checking any earlier execution. It cannot maintain funds while
+the browser is closed. `taker balance` includes lifecycle status; `taker maintain`
+performs owner-authorized recovery/renewal for CLI deposits.
+
+The taker SDK exposes `CovenantWallet.getLifecycle()` and
+`TakerClient.maintainWallet(maintenanceStore)`. The swap store must implement
+`list()` so maintenance can refuse unresolved authorizations. Pass the same
+`maintenanceStore` in `TakerOptions` to block execution while maintenance is pending,
+and serialize maintenance with all other wallet operations, including across tabs.
+The store must persist pending `MaintenanceOperation` records and archive completed
+receipts separately. Recovery first batch-settles explicit covenant inputs into
+the owner's standard wallet, preserving assets, then sends an exact persisted
+transaction back into the swap covenant. Never clear a pending journal: an
+uncertain batch outcome stops automatic retries and needs input/chain inspection;
+a saved return transaction can be resumed without selecting new inputs. The
+current implementation requires zero batch and offchain fees.
+
 The server never reads or serves `.taker/private-key`. Browser keys are encrypted
 with the chosen password in local storage. While unlocked, **Download recovery key**
 saves an unencrypted JSON file containing the private key and public identity.

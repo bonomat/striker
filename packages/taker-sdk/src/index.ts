@@ -1,5 +1,6 @@
 import { CovenantWallet } from "./covenant-wallet.js";
 export { CovenantWallet } from "./covenant-wallet.js";
+export type { MaintenanceOperation, MaintenanceStore } from '@satora/striker-protocol/browser';
 import {
   asset,
   buildOffchainTx,
@@ -62,11 +63,23 @@ export interface SavedSwap {
 export interface SwapStore {
   get(quoteId: string): Promise<SavedSwap | undefined>;
   put(swap: SavedSwap): Promise<void>;
+  list?(): SavedSwap[] | Promise<SavedSwap[]>;
+}
+/** Expired intent authorizations cannot spend a renewed input. Allow a clock margin. */
+export function hasPendingAuthorization(swap: SavedSwap, now = Date.now()): boolean {
+  if (swap.result?.status === 'settled' || swap.result?.status === 'cancelled' || swap.refund?.status === 'refunded') return false;
+  if (!(swap.intentInputs || swap.fundingStartedAt || swap.funding)) return false;
+  if (swap.intentInputs && swap.response?.protocol === 'intent-v1') {
+    const deadline = Number(swap.response.offer?.quote.deadline);
+    if (Number.isFinite(deadline) && deadline > 0 && deadline * 1000 + 60000 <= now) return false;
+  }
+  return true;
 }
 export interface TakerOptions {
   chain: Chain;
+  maintenanceStore?: import('@satora/striker-protocol/browser').MaintenanceStore;
   actor: {
-    wallet: Pick<IWallet, "send">;
+    wallet: Pick<IWallet, "send"> & Partial<Pick<IWallet, 'getBalance' | 'settle' | 'getAddress' | 'getVtxos' | 'getContractManager'>>;
     publicKey: Uint8Array;
     payoutScript: Uint8Array;
     legacyPayoutScript?: Uint8Array;
@@ -100,6 +113,18 @@ export class TakerClient {
   readonly strikerUrl: string;
   constructor(readonly options: TakerOptions) {
     this.strikerUrl = serviceURL(options.strikerUrl);
+  }
+  async maintainWallet(store: import('@satora/striker-protocol/browser').MaintenanceStore) {
+    if (this.active.size) throw new Error('Wait for the current swap operation before renewing deposits');
+    return this.exclusive('wallet-maintenance', async () => {
+      if (!this.options.store.list) throw new Error('Wallet maintenance requires a swap store that lists pending authorizations');
+      const swaps = await this.options.store.list();
+      if (swaps.some(s => hasPendingAuthorization(s)))
+        throw new Error('Resolve pending swaps or cancel their authorizations before renewing deposits');
+      const { actor, chain } = this.options;
+      if (!actor.identity) throw new Error('Wallet maintenance requires an owner signing identity');
+      return new CovenantWallet(chain, actor.publicKey, actor.identity!, actor.wallet).maintain(store);
+    });
   }
 
   verify(request: QuoteRequest, value: unknown, checkExpiry = true) {
@@ -174,6 +199,7 @@ export class TakerClient {
     return saved;
   }
   private async exclusive<T>(id: string, run: () => Promise<T>) {
+    if (id !== 'wallet-maintenance' && this.active.has('wallet-maintenance')) throw new Error('Wallet recovery or renewal is in progress');
     if (this.active.has(id))
       throw new Error("This swap is already being processed");
     this.active.add(id);
@@ -185,6 +211,7 @@ export class TakerClient {
   }
   async execute(quoteId: string): Promise<SwapResult> {
     return this.exclusive(quoteId, async () => {
+      if (await this.options.maintenanceStore?.get()) throw new Error('Complete or inspect pending wallet maintenance before executing a swap');
       const saved = await this.saved(quoteId);
       if (saved.refund) throw new Error("Refund already requested");
       if (saved.result?.status === "cancelled") throw new Error("Authorization was cancelled; request a new quote");

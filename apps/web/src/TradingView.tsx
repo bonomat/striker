@@ -1,4 +1,4 @@
-import { formatAmount, type SavedSwap } from "@satora/taker-sdk";
+import { formatAmount, hasPendingAuthorization, type SavedSwap } from "@satora/taker-sdk";
 import type { AppConfig } from "./config.js";
 import { marketHistory, tradePrice } from "./trading.js";
 import "./trading.css";
@@ -63,7 +63,7 @@ export function TradingView(p: TradingViewProps) {
   const receive = quote ? formatAmount(BigInt(quote.response.offer.quote.x), reverse ? asset.decimals : 8) : "—";
   const price = quote ? priceLabel(tradePrice(quote, asset.decimals)) : null;
   const live = !!quote && p.expires > 0;
-  const quoteStatus = p.quoting ? "Requesting quote" : quote ? live ? `${p.expires}s remaining` : "Expired" : "Awaiting amount";
+  const quoteStatus = p.quoting ? "Requesting quote" : p.error ? "Quote unavailable" : quote ? live ? `${p.expires}s remaining` : "Expired" : "Awaiting amount";
   return <div className="pro-terminal">
     <div className="pro-intro"><span><i /> STRIKER PRO</span><span>Spot trading · Your wallet, your control</span></div>
     {asset.demo && <div className="pro-notice">{asset.name} is an unbacked demo asset for testing. It is not redeemable for dollars.</div>}
@@ -88,7 +88,7 @@ export function TradingView(p: TradingViewProps) {
     {p.pending && <button className="pro-pending" onClick={() => p.onInspect(p.pending!)}>A swap needs your attention <strong>View swap ↗</strong></button>}
     <section className="pro-panel pro-trades"><div className="pro-panel-heading"><h2>Your trades</h2><button onClick={p.onActivity}>All activity ↗</button></div>{trades.length ? <div className="pro-trade-list">{trades.slice(0, 6).map(swap => {
       const selling = swap.request.direction === "btc-to-token";
-      const status = swap.result?.status === "settled" ? "Settled" : swap.result?.status === "cancelled" ? "Cancelled" : swap.refund?.status === "refunded" ? "Returned" : swap.result?.status === "failed" ? "Needs attention" : "Pending";
+      const status = swap.result?.status === "settled" ? "Settled" : swap.result?.status === "cancelled" ? "Cancelled" : swap.refund?.status === "refunded" ? "Returned" : swap.intentInputs && !hasPendingAuthorization(swap) ? "Authorization expired" : swap.result?.status === "failed" ? "Needs attention" : "Pending";
       return <button className="pro-trade-row" key={swap.response.quoteId} onClick={() => p.onInspect(swap)}><span><strong className={selling ? "pro-red" : "pro-green"}>{selling ? "Sell" : "Buy"} BTC</strong><small>{swap.createdAt ? new Date(swap.createdAt).toLocaleString() : "Time unavailable"}</small></span><span>{formatAmount(BigInt(swap.request.giveAmount), selling ? 8 : asset.decimals)} {selling ? "BTC" : asset.symbol}<small>{priceLabel(tradePrice(swap, asset.decimals))} {asset.symbol} / BTC</small></span><span className={status === "Settled" ? "pro-green" : ""}>{status} ↗</span></button>;
     })}</div> : <p className="pro-empty">{p.connected ? "Your trades will appear here after you submit a swap." : "Connect your wallet to see your trades and balances."}</p>}</section>
     <div className="pro-bottom"><span><i /> Non-custodial execution</span><span>Signed quotes · No resting orders</span></div>

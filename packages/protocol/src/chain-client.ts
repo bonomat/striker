@@ -1,7 +1,7 @@
 import { buildIntentSettlement } from './intent-settlement.js';
 import { ArkAddress, CSVMultisigTapscript, EsploraProvider, Extension, InMemoryContractRepository,
   InMemoryWalletRepository, RestArkProvider, RestEmulatorProvider, RestIndexerProvider,
-  SingleKey, Transaction, Wallet, attachPrevArkTxs, type VtxoScript } from '@arkade-os/sdk';
+  SingleKey, Transaction, Wallet, attachPrevArkTxs, canSpendOffchain, type VirtualCoin, type VtxoScript } from '@arkade-os/sdk';
 import { encodeBase64, decodeBase64 } from './encoding.js';
 import { schnorr } from '@noble/curves/secp256k1.js';
 import { EPOCH_PACKET, bancoUserCovenant, tokenUserCovenant, covenantTree, makerCovenant } from './covenant.js';
@@ -55,7 +55,13 @@ export async function waitFor<T>(read: () => Promise<T | undefined>, label: stri
 }
 export async function coinsAt(chain: Chain, tree: VtxoScript) {
   const result = await chain.indexer.getVtxos({ scripts: [hex(tree.pkScript)], spendableOnly: true });
-  return result.vtxos;
+  const now = await expiryContext(chain, result.vtxos);
+  return result.vtxos.filter(c => canSpendOffchain(c, now));
+}
+export async function expiryContext(chain: Chain, coins: VirtualCoin[]) {
+  const height = coins.some(c => c.expiresAtHeight !== undefined)
+    ? (await new EsploraProvider(chain.settings.esploraUrl).getChainTip()).height : undefined;
+  return { timestamp: new Date(), height };
 }
 export async function fundedCoin(chain: Chain, tree: VtxoScript, txid: string, vout?: number) {
   return waitFor(async () => (await coinsAt(chain, tree)).find(c => c.txid === txid && (vout === undefined || c.vout === vout)), 'funded covenant');

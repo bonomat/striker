@@ -49,8 +49,9 @@ main(async () => {
             ? result.reason.message : undefined);
           const reason = reasons[0];
           if (reason && reasons.every(value => value === reason) &&
-              ['Swap amount is too small', 'Insufficient maker liquidity'].includes(reason))
-            throw new HttpError(422, reason);
+              ['Swap amount is too small', 'Insufficient maker liquidity', 'Maker liquidity expired and needs recovery',
+                'Maker liquidity is being renewed; try again shortly'].includes(reason))
+            throw new HttpError(reason.startsWith('Maker liquidity') ? 503 : 422, reason);
           throw new HttpError(503, 'No executable maker quotes');
         }
         for (const [id, order] of orders) if (order.offer.quote.deadline <= nowSeconds() && order.status === 'quoted') orders.delete(id);

@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import type { WalletBalance } from "@arkade-os/sdk";
-import { formatAmount, parseAmount, MIN_QUOTE_FUNDING_SECONDS, type SavedSwap } from "@satora/taker-sdk";
+import { formatAmount, parseAmount, MIN_QUOTE_FUNDING_SECONDS, hasPendingAuthorization, type SavedSwap } from "@satora/taker-sdk";
 import type { AppConfig } from "./config.js";
 import {
   connectWallet,
@@ -31,6 +31,7 @@ import { SwapDetails } from "./SwapDetails.js";
 import { HowItWorks } from "./HowItWorks.js";
 import { ProtocolPage } from "./ProtocolPage.js";
 import { TradingView } from "./TradingView.js";
+import { WalletLifecycle, type WalletLifecycleStatus } from "./WalletLifecycle.js";
 import { walletSession } from "./wallet-session.js";
 
 const currentPage = () => window.location.hash === "#/protocol" ? "protocol" : window.location.hash === "#/pro" ? "pro" : "swap";
@@ -219,6 +220,13 @@ export default function App() {
   const [withdrawAddress, setWithdrawAddress] = useState("");
   const [walletAction, setWalletAction] = useState(false);
   const [walletActionError, setWalletActionError] = useState("");
+  const [lifecycle, setLifecycle] = useState<WalletLifecycleStatus | null>(null);
+  const [maintenancePending, setMaintenancePending] = useState(false);
+  const [maintenanceError, setMaintenanceError] = useState("");
+  const [autoRenew, setAutoRenew] = useState(() => {
+    try { return localStorage.getItem('striker.auto-renew') !== 'false'; } catch { return true; }
+  });
+  const maintenanceRunning = useRef(false), lastMaintenanceAttempt = useRef(0);
   const [walletMode, setWalletMode] = useState<"create" | "import">("create"),
     [costsOpen, setCostsOpen] = useState(false),
     [copied, setCopied] = useState(false);
@@ -243,8 +251,9 @@ export default function App() {
       swap.intentSubmittedAt || swap.fundingStartedAt || swap.funding || swap.result || swap.refund,
   );
   const pending = history.find(
-    (swap) => !swap.result && swap.refund?.status !== "refunded",
+    (swap) => !swap.result && swap.refund?.status !== "refunded" && hasPendingAuthorization(swap, now),
   );
+  const maintenanceBlocked = history.some(swap => hasPendingAuthorization(swap, now));
   const activeSwap = history.find((swap) => swap.response.quoteId === selected);
   const availableAsset = BigInt(
     balance?.availableAssets.find((entry) => entry.assetId === asset.id)
@@ -297,8 +306,11 @@ export default function App() {
     refreshing.current = true;
     setBalanceRefreshing(true);
     try {
-      const [current, previous] = await Promise.all([account.covenant.getBalance(), account.wallet.getBalance()]);
+      const [current, previous, lifecycle, maintenance] = await Promise.all([
+        account.covenant.getBalance(), account.covenant.getLegacyBalance(), account.covenant.getLifecycle(), account.maintenanceStore.get(),
+      ]);
       setBalance(current); setLegacyBalance(previous);
+      setLifecycle(lifecycle); setMaintenancePending(!!maintenance);
       setBalanceError("");
     } catch {
       setBalanceError("Balance unavailable. Try refreshing.");
@@ -307,9 +319,27 @@ export default function App() {
       setBalanceRefreshing(false);
     }
   }, [account]);
+  const maintainDeposits = useCallback(async () => {
+    if (!account || maintenanceRunning.current) return;
+    maintenanceRunning.current = true; lastMaintenanceAttempt.current = Date.now();
+    setWalletAction(true); setMaintenanceError(''); setQuote(null);
+    try {
+      await withWalletLock(account, () => account.client.maintainWallet(account.maintenanceStore));
+      setMaintenancePending(false);
+    } catch (error) { setMaintenanceError(errorMessage(error)); }
+    finally {
+      await refreshBalance(); setWalletAction(false); maintenanceRunning.current = false;
+    }
+  }, [account, refreshBalance]);
+  useEffect(() => {
+    if (!autoRenew || !account || walletAction || busy || maintenancePending || maintenanceBlocked || !lifecycle ||
+      !(lifecycle.recoverable || lifecycle.expiring) || Date.now() - lastMaintenanceAttempt.current < 60000) return;
+    void maintainDeposits();
+  }, [autoRenew, account, walletAction, busy, maintenancePending, maintenanceBlocked, lifecycle, maintainDeposits]);
   useEffect(() => {
     if (!account) {
       setBalance(null);
+      setLifecycle(null); setMaintenancePending(false); setMaintenanceError('');
       return;
     }
     void refreshBalance();
@@ -368,6 +398,7 @@ export default function App() {
     setQuoting(false);
     if (
       !account ||
+      walletAction || maintenancePending ||
       !asset.id ||
       !units ||
       amountError ||
@@ -416,6 +447,7 @@ export default function App() {
     !!pending,
     !!balance,
     quoteNonce,
+    walletAction, maintenancePending,
   ]);
 
   async function openWallet(event: React.FormEvent) {
@@ -648,6 +680,7 @@ export default function App() {
       setRevision((value) => value + 1);
     }
   }
+  const retryableQuoteError = quoteError === 'Maker liquidity expired and needs recovery' || quoteError === 'Maker liquidity is being renewed; try again shortly';
   const cta = !config
     ? "Loading market…"
     : !asset.id
@@ -666,6 +699,8 @@ export default function App() {
                   ? "Add BTC to your wallet"
                   : quoting
                     ? "Finding your best quote…"
+                    : retryableQuoteError
+                      ? 'Retry quote'
                     : quoteError
                       ? "Try another amount"
                       : quote && expires < MIN_QUOTE_FUNDING_SECONDS
@@ -674,6 +709,7 @@ export default function App() {
                           ? "Enter an amount"
                           : "Review swap";
   const ctaDisabled =
+    walletAction || maintenancePending ||
     !config ||
     !asset.id ||
     (!!account &&
@@ -683,8 +719,8 @@ export default function App() {
         insufficient ||
         needsCarrier ||
         quoting ||
-        !quote ||
-        !!quoteError));
+        (!quote && !retryableQuoteError) ||
+        (!!quoteError && !retryableQuoteError)));
   const succeeded = activeSwap?.result?.status === "settled",
     refunded = activeSwap?.refund?.status === "refunded";
   const cancelledIntent = activeSwap?.result?.status === "cancelled";
@@ -695,6 +731,7 @@ export default function App() {
       setWalletError("");
       setModal("wallet");
     } else if (pending) inspect(pending);
+    else if (retryableQuoteError) setQuoteNonce(value => value + 1);
     else if (quote && expires < MIN_QUOTE_FUNDING_SECONDS)
       setQuoteNonce((value) => value + 1);
     else if (quote) {
@@ -751,6 +788,11 @@ export default function App() {
         </div>
       </header>
       <main className="main-content">
+        {account && page !== 'protocol' && (walletAction || maintenancePending || maintenanceError || lifecycle?.recoverable || lifecycle?.expiring || lifecycle?.awaitingSweep) ?
+          <button className="wallet-lifecycle-banner" onClick={() => setModal('wallet')}>
+            <span>{walletAction ? 'Renewing wallet deposits…' : maintenanceError ? 'Wallet maintenance needs attention' : maintenancePending ? 'Wallet maintenance is pending' : lifecycle?.recoverable ? 'Expired wallet deposits need recovery' : lifecycle?.awaitingSweep ? 'Expired deposits are waiting for the Arkade sweep' : 'Wallet deposits are nearing expiry'}</span>
+            <strong>View wallet ↗</strong>
+          </button> : null}
         {page === "protocol" ? <ProtocolPage assetSymbol={asset.symbol} bitcoinToToken={reverse} /> : page === "pro" ? <TradingView
           asset={asset} connected={!!account} balanceReady={!!balance}
           btcBalance={BigInt(balance?.available ?? 0)} tokenBalance={availableAsset}
@@ -761,7 +803,7 @@ export default function App() {
           }}
           amount={amount} setAmount={setAmount} percentage={percentage}
           quote={quote} quoting={quoting} expires={expires} history={history}
-          locked={busy || !!pending} cta={cta} disabled={ctaDisabled || busy}
+          locked={busy || walletAction || maintenancePending || !!pending} cta={walletAction ? 'Maintaining wallet…' : cta} disabled={ctaDisabled || busy}
           error={configError || amountError || quoteError || balanceError}
           onReview={primaryClick} onRefreshQuote={() => setQuoteNonce(value => value + 1)}
           onRefreshBalance={() => void refreshBalance()}
@@ -797,7 +839,7 @@ export default function App() {
                   placeholder="0"
                   value={amount}
                   onChange={(event) => setAmount(event.target.value)}
-                  disabled={busy || !!pending}
+                  disabled={busy || walletAction || maintenancePending || !!pending}
                   aria-describedby="send-balance"
                   aria-invalid={!!amountError || insufficient}
                 />
@@ -826,7 +868,7 @@ export default function App() {
                   {[25, 50, 75, 100].map((percent) => (
                     <button
                       key={percent}
-                      disabled={!account || !balance || busy || !!pending}
+                      disabled={!account || !balance || busy || walletAction || maintenancePending || !!pending}
                       onClick={() => percentage(percent)}
                     >
                       {percent === 100 ? "Max" : `${percent}%`}
@@ -839,7 +881,7 @@ export default function App() {
               className="direction-arrow"
               aria-label="Switch swap direction"
               title="Switch swap direction"
-              disabled={busy || !!pending}
+              disabled={busy || walletAction || maintenancePending || !!pending}
               onClick={() => {
                 setReverse((value) => !value);
                 setAmount("");
@@ -1074,6 +1116,10 @@ export default function App() {
                 error={balanceError}
                 refresh={() => void refreshBalance()}
               />
+              <WalletLifecycle status={lifecycle} pending={maintenancePending} busy={walletAction}
+                error={maintenanceError} autoRenew={autoRenew} blocked={maintenanceBlocked || busy}
+                onAutoRenew={enabled => { setAutoRenew(enabled); try { localStorage.setItem('striker.auto-renew', String(enabled)); } catch { /* Session preference still applies. */ } }}
+                onMaintain={() => void maintainDeposits()} />
               <p className="small-print">
                 {sessionRemembered
                   ? "Stays unlocked in this tab until you lock it or close the tab."
@@ -1083,7 +1129,7 @@ export default function App() {
               {legacyBalance && legacyBalance.total > 0 && <div className="legacy-wallet-funds">
                 <p className="small-print">Previous wallet: {legacyBalance.total.toLocaleString()} sats
                   {legacyBalance.assets.length ? ` and ${legacyBalance.assets.length} asset type(s)` : ""}. Move these funds to make them available for swaps.</p>
-                <button className="secondary-button" disabled={walletAction || busy} onClick={() => void movePreviousFunds()}>
+                <button className="secondary-button" disabled={walletAction || busy || maintenancePending} onClick={() => void movePreviousFunds()}>
                   {walletAction ? "Moving funds…" : "Move previous wallet funds"}
                 </button>
               </div>}
@@ -1114,7 +1160,7 @@ export default function App() {
                 <p className="small-print">Uses your owner key and Arkade server. Striker and the Emulator are not needed.</p>
                 <input aria-label="Withdrawal Arkade address" placeholder="Arkade destination address" value={withdrawAddress}
                   onChange={event => setWithdrawAddress(event.target.value)} />
-                <button className="secondary-button" disabled={walletAction || busy || !withdrawAddress.trim()}
+                <button className="secondary-button" disabled={walletAction || busy || maintenancePending || !withdrawAddress.trim()}
                   onClick={() => void withdrawFunds()}>{walletAction ? "Sending…" : "Send all funds"}</button>
               </details>
               {walletActionError && <p className="inline-error" role="alert">{walletActionError}</p>}
@@ -1452,6 +1498,7 @@ export default function App() {
                       ? "Complete"
                       : swap.result?.status === "cancelled" ? "Cancelled" : swap.refund?.status === "refunded"
                         ? "Returned"
+                        : swap.intentInputs && !hasPendingAuthorization(swap, now) ? "Authorization expired"
                         : "In progress"}{" "}
                     ↗
                   </span>
