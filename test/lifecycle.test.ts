@@ -224,7 +224,7 @@ test('SDK maintenance blocks unresolved authorizations including failed executio
 test('expired intent authorizations stop blocking renewal after a clock margin, but funded offers remain protected', () => {
   const saved = { intentInputs: [{}], response: { protocol: 'intent-v1', offer: { quote: { deadline: String(Math.floor(now / 1000) - 120) } } } } as SavedSwap;
   assert.equal(hasPendingAuthorization(saved, now), false);
-  saved.response.offer.quote.deadline = String(Math.floor(now / 1000) - 30);
+  saved.response.offer!.quote.deadline = String(Math.floor(now / 1000) - 30);
   assert.equal(hasPendingAuthorization(saved, now), true);
   const funded = { ...saved, intentInputs: undefined, fundingStartedAt: now - 1000000 };
   assert.equal(hasPendingAuthorization(funded, now), true);

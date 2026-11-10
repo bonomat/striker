@@ -155,7 +155,7 @@ test('independent maker, striker, and taker processes trade exclusively through 
         store: { async get(id) { return records.get(id); }, async put(saved) { records.set(saved.response.quoteId, saved); } } });
       assert.equal((await first.wallet.getBalance()).availableAssets.find(a => a.assetId === assetId), undefined);
       const quote = await client.quote(assetId, '500', 'btc-to-token');
-      assert.equal(quote.response.offer.quote.x, '100');
+      assert.equal(quote.response.offer!.quote.x, '100');
       // Direction is bound by the signed domain and request validation.
       assert.throws(() => client.verify({ ...quote.request, direction: 'token-to-btc' }, quote.response), /requested trade/);
       const offer = parseOffer(quote.response.offer);

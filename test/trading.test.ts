@@ -27,7 +27,7 @@ test('trading prices normalize buy and sell atomic amounts at different token pr
 
 test('price calculation preserves precision beyond the safe integer range', () => {
   const record = swap(true, 18);
-  record.response.offer.quote.x = '674601234567890123456';
+  record.response.offer!.quote.x = '674601234567890123456';
   assert.equal(tradePrice(record, 18), 6_746_012n);
 });
 

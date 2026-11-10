@@ -37,7 +37,7 @@ test('taker intent authenticates its domain, offer, outpoint and every contribut
   const otherNetwork = reusableTakerContract({ ...chain, settings: { ...chain.settings, network: 'mutinynet' } }, publicKey(2));
   assert(!verifyIntent(publicKey(2), otherNetwork.domain, input));
   for (const key of Object.keys(input.terms) as (keyof typeof input.terms)[]) {
-    const value = input.terms[key];
+    const value = input.terms[key]!;
     const changed = value.length >= 64 ? (value[0] === '0' ? '1' : '0') + value.slice(1) : String(BigInt(value) + 1n);
     assert(!verifyIntent(publicKey(2), user.domain, { ...input, terms: { ...input.terms, [key]: changed } }), key);
   }
