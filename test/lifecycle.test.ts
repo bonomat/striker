@@ -134,6 +134,22 @@ test('maintenance refuses unswept expired inputs and unsupported fee policies be
   await assert.rejects(maintainCovenant(options), /zero settlement fees/); assert.equal((saved as MaintenanceOperation | undefined)?.startedAt, undefined);
 });
 
+test('maintenance settles when an expiry-based fee program waives the fee for its inputs', async () => {
+  const chain = chainBase(), tree = reusableTakerContract(chain, publicKey(2)).tree;
+  chain.indexer = { async getVtxos() { return { vtxos: [coin({ script: hex(tree.pkScript), isSwept: true, expiresAt: new Date(now - 86400000) })] }; } } as unknown as Chain['indexer'];
+  // Fee program served by mutinynet arkd: only long-lived VTXOs pay.
+  chain.ark = { async getInfo() { return { fees: { txFeeRate: '0', intentFee: {
+    offchainInput: "inputType == 'vtxo' && expiry - now() > 518656.0 ? amount * 0.002 : 0.0", offchainOutput: '0.0', onchainInput: '0.0', onchainOutput: '0.0' } } }; } } as Chain['ark'];
+  const address = tree.address('tark', chain.server).encode();
+  let saved: MaintenanceOperation | undefined, settled = 0;
+  const wallet = { async getAddress() { return address; },
+    async getContractManager() { return { async createContract() {}, async annotateVtxos(coins: VirtualCoin[]) { return coins; } }; },
+    async settle() { settled++; throw new Error('test provider interrupted'); } } as unknown as IWallet;
+  await assert.rejects(maintainCovenant({ chain, wallet, identity: {} as Identity, sourceTree: tree, destination: address,
+    store: { async get() { return saved; }, async put(op) { saved = structuredClone(op); } } }), /test provider interrupted/);
+  assert.equal(settled, 1);
+});
+
 test('lost settlement responses reconcile only the recorded inputs settlement ID', async () => {
   const chain = chainBase(), tree = reusableTakerContract(chain, publicKey(2)).tree;
   const address = tree.address('tark', chain.server).encode();

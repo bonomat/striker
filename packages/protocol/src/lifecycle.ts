@@ -1,4 +1,4 @@
-import { ArkAddress, ArkError, EsploraProvider, Extension, Intent, Transaction, VtxoScript, asset, buildOffchainTx, canSpendOffchain, contractHandlers, withPrevTxs,
+import { ArkAddress, ArkError, Estimator, EsploraProvider, Extension, Intent, Transaction, VtxoScript, asset, buildOffchainTx, canSpendOffchain, contractHandlers, withPrevTxs,
   isPastExpiry, type ContractHandler, type ExtendedVirtualCoin, type IWallet, type Identity, type TapLeafScript, type VirtualCoin } from '@arkade-os/sdk';
 import { bytes, hex } from './wire.js';
 import { decodeBase64, encodeBase64 } from './encoding.js';
@@ -6,6 +6,11 @@ import { type Chain, expiryContext, waitFor } from './chain-client.js';
 
 export const RENEWAL_WINDOW_MS = 6 * 60 * 60 * 1000;
 export type DepositState = 'available' | 'expiring' | 'awaiting-sweep' | 'recoverable' | 'spent';
+function feeInput(coin: VirtualCoin) {
+  return { amount: BigInt(coin.value), type: coin.isSwept ? 'recoverable' as const : 'vtxo' as const, weight: 0,
+    birth: coin.createdAt, expiry: coin.expiresAt };
+}
+
 export function depositState(coin: VirtualCoin, now = Date.now(), thresholdMs = RENEWAL_WINDOW_MS, height?: number): DepositState {
   if (coin.isSpent || coin.spentBy || coin.settledBy) return 'spent';
   if (coin.isSwept) return 'recoverable';
@@ -207,8 +212,15 @@ export async function maintainCovenant(options: {
   if (!operation.settlementTxid) {
     // Refuse unsupported fee policies before signing or publishing any transfer.
     const info = await chain.ark.getInfo();
-    if (Number(info.fees.txFeeRate) !== 0 || Object.values(info.fees.intentFee ?? {}).some(value => value !== '' && !/^0(?:\.0+)?$/.test(value)))
-      throw new Error('Covenant maintenance currently requires zero settlement fees');
+    const ownerOutput = { amount: BigInt(operation.amount), script: hex(ArkAddress.decode(ownerAddress).pkScript) };
+    const assertFeeFree = (coins: VirtualCoin[]) => {
+      // The batch output carries the full input amount, so any intent fee would
+      // be rejected by arkd. arkd fee programs may waive fees by expiry (e.g.
+      // near-expiry or swept inputs), so evaluate them for these exact coins.
+      const fee = new Estimator(info.fees.intentFee ?? {}).evaluate(coins.map(feeInput), [], [ownerOutput], []);
+      if (Number(info.fees.txFeeRate) !== 0 || fee.satoshis !== 0)
+        throw new Error(`Covenant maintenance currently requires zero settlement fees (server would charge ${fee.satoshis} sats)`);
+    };
     let inputs: ExtendedVirtualCoin[];
     if (!operation.bridge) {
       const all = await covenantCoins(chain, sourceTree);
@@ -221,6 +233,9 @@ export async function maintainCovenant(options: {
       if (operation.assets && JSON.stringify(assets) !== JSON.stringify(operation.assets))
         throw new Error('Maintenance inputs do not match the recorded assets');
       operation.assets ??= assets;
+      // Bridge outputs inherit the earliest input expiry, so checking the
+      // recorded coins as live VTXOs bounds the fee of the later batch input.
+      assertFeeFree(recorded);
       inputs = await annotateOwnerInputs(chain, wallet, sourceTree, recorded);
       if (coins.some(c => !c!.isSwept)) {
         // Live covenant scripts have no unilateral exit leaf. Move through the
@@ -242,6 +257,7 @@ export async function maintainCovenant(options: {
         throw new Error('Renewal bridge does not match recorded maintenance inputs');
       inputs = await (await wallet.getContractManager()).annotateVtxos([coins]);
     }
+    assertFeeFree(inputs);
     operation.startedAt = Date.now(); await store.put(operation);
     try {
       operation.settlementTxid = await wallet.settle({ inputs, outputs: [{ address: ownerAddress, amount: BigInt(operation.amount) }] });
