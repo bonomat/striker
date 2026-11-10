@@ -268,3 +268,19 @@ test('BTC and token recovery preserve amounts and maker epoch in a persisted, re
   await maintainCovenant(options); assert.equal(settled, 1); assert.equal(submitted, 1);
   }
 });
+
+test('a v2 wallet finishes a maintenance record saved by its v1 covenant instead of refusing it', async () => {
+  const chain = chainBase(), owner = 'tark1owner';
+  const v1 = reusableTakerContract(chain, publicKey(2), 1);
+  const record = { version: 1, network: 'regtest', source: hex(v1.tree.pkScript), destination: v1.address, ownerAddress: owner,
+    inputs: [], amount: 1, completed: true } as MaintenanceOperation;
+  const client = new TakerClient({ chain, strikerUrl: 'http://striker.test', covenantVersion: 2,
+    actor: { publicKey: publicKey(2), payoutScript: new Uint8Array(), identity: {} as Identity,
+      wallet: { async send() { throw new Error('no funds moved'); }, async getAddress() { return owner; }, async settle() { throw new Error('none'); },
+        async getVtxos() { return []; }, async getContractManager() { throw new Error('none'); } } as unknown as IWallet },
+    store: { async get() { return undefined; }, async put() {}, list() { return []; } } });
+  const store = (op: MaintenanceOperation) => ({ async get() { return op; }, async put() {} });
+  assert.equal((await client.maintainWallet(store(record))).source, record.source);
+  const foreign = { ...record, source: hex(reusableTakerContract(chain, publicKey(3), 1).tree.pkScript) };
+  await assert.rejects(client.maintainWallet(store(foreign)), /another wallet or covenant/);
+});

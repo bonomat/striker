@@ -162,7 +162,16 @@ export class TakerClient {
         throw new Error('Resolve pending swaps or cancel their authorizations before renewing deposits');
       const { actor, chain } = this.options;
       if (!actor.identity) throw new Error('Wallet maintenance requires an owner signing identity');
-      return new CovenantWallet(chain, actor.publicKey, actor.identity!, actor.wallet, this.covenantVersion).maintain(store, options);
+      // A pending record may come from this wallet's other covenant version (e.g. a
+      // v1 renewal saved before the upgrade). Finish it with the covenant it belongs to.
+      const pending = await store.get();
+      for (const version of [this.covenantVersion, this.covenantVersion === 2 ? 1 : 2] as IntentVersion[]) {
+        const wallet = new CovenantWallet(chain, actor.publicKey, actor.identity!, actor.wallet, version);
+        if (pending && pending.source !== hex(wallet.contract.tree.pkScript)) continue;
+        if (pending && version !== this.covenantVersion) options.log?.('resuming record of the previous covenant', { version, destination: pending.destination });
+        return wallet.maintain(store, { ...options, ...(pending ? { destination: pending.destination } : {}) });
+      }
+      throw new Error('Maintenance journal belongs to another wallet or covenant');
     });
   }
 
