@@ -12,7 +12,7 @@ import {
 import {
   bytes,
   coinsAt, checkEmulator, reusableTakerContract, termsForInput, termsForOrder, encodeIntent, MAX_INTENT_INPUTS,
-  parseMarketSnapshot, parseOrderResult, orderId, assetId as parseAssetId, nowSeconds,
+  parseMarketSnapshot, parseOrderResult, orderId, assetId as parseAssetId, nowSeconds, HttpError,
   type SignedTakerInput, type IntentVersion, type MarketSnapshot, type Coin,
   decimal,
   encodeBase64,
@@ -229,10 +229,32 @@ export class TakerClient {
     });
   }
   private async submitOrder(saved: SavedSwap): Promise<SavedSwap> {
-    const raw = await requestJSON(`${this.strikerUrl}/v3/orders`, { takerPublicKey: saved.request.takerPublicKey,
-      assetId: saved.request.assetId, direction: saved.request.direction ?? 'token-to-btc', giveAmount: saved.request.giveAmount,
-      inputs: saved.intentInputs }, 60_000);
+    let raw: unknown;
+    try {
+      raw = await requestJSON(`${this.strikerUrl}/v3/orders`, { takerPublicKey: saved.request.takerPublicKey,
+        assetId: saved.request.assetId, direction: saved.request.direction ?? 'token-to-btc', giveAmount: saved.request.giveAmount,
+        inputs: saved.intentInputs }, 60_000);
+    } catch (error) {
+      // 422/503 mean Striker matched nothing and submitted nothing. The signature
+      // stays valid until its deadline, which still blocks wallet maintenance.
+      if (error instanceof HttpError && (error.status === 422 || error.status === 503)) {
+        saved.result = { quoteId: saved.response.quoteId, status: 'failed' };
+        await this.options.store.put(saved);
+      }
+      throw error;
+    }
     return this.recordOrder(saved, raw);
+  }
+  /** Submit a saved, still-valid order again (same signature, same inputs). */
+  async resubmitOrder(id: string): Promise<SavedSwap> {
+    return this.exclusive(id, async () => {
+      const saved = await this.saved(id);
+      if (saved.response.protocol !== 'order-v2' || !saved.intentInputs) throw new Error('Not a slippage order');
+      if (saved.result?.status === 'settled' || saved.result?.status === 'cancelled') return saved;
+      if (Number(saved.order!.deadline) - 5 <= Date.now() / 1000) throw new Error('This order expired. Place a new one; your deposits stay in your wallet.');
+      saved.result = undefined;
+      return this.submitOrder(saved);
+    });
   }
   private async recordOrder(saved: SavedSwap, raw: unknown): Promise<SavedSwap> {
     const result = parseOrderResult(raw);

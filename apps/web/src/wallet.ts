@@ -83,7 +83,10 @@ export async function connectWallet(
     settlementConfig: false,
   });
   const legacyAddress = await wallet.getAddress();
-  const covenant = new CovenantWallet(chain, publicKey, identity, wallet);
+  // Swap funds live in the v2 covenant, which signs slippage orders. The v1
+  // covenant (one quote per authorization) is kept only to move old funds over.
+  const covenant = new CovenantWallet(chain, publicKey, identity, wallet, 2);
+  const previousCovenant = new CovenantWallet(chain, publicKey, identity, wallet, 1);
   const address = covenant.contract.address;
   const store = new BrowserSwapStore(
     `striker.swaps:${config.network}:${chain.server.toString()}:${publicHex}`,
@@ -102,6 +105,7 @@ export async function connectWallet(
   const client = new TakerClient({
     chain,
     maintenanceStore,
+    covenantVersion: 2,
     actor: {
       wallet,
       identity,
@@ -113,7 +117,7 @@ export async function connectWallet(
     strikerUrl: config.strikerUrl ?? `${location.origin}/api/striker`,
     store,
   });
-  return { wallet, identity, address, legacyAddress, covenant, publicHex, client, store, maintenanceStore };
+  return { wallet, identity, address, legacyAddress, covenant, previousCovenant, publicHex, client, store, maintenanceStore };
 }
 export type ConnectedWallet = Awaited<ReturnType<typeof connectWallet>>;
 export async function withWalletLock<T>(

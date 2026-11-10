@@ -1723,3 +1723,32 @@ button svg {
 .wallet-lifecycle-banner { display: flex; justify-content: space-between; gap: 16px; width: 100%; text-align: left; padding: 14px 18px; border: 1px solid #d8dfce; border-radius: 10px; background: #edf4e1; color: #455332; font-size: 12px; margin-top: 20px; }
 .wallet-lifecycle-banner strong { white-space: nowrap; }
 .pro-shell .wallet-lifecycle-banner { color: #e9d3a0; background: #352d20; border-color: #57492f; }
+
+/* Slippage control: presets plus custom percent. */
+.slippage-picker {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.slippage-picker button {
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: #f3f5ef;
+  color: #8d967f;
+  font-size: 11px;
+  font-weight: 500;
+}
+.slippage-picker button[aria-pressed="true"] {
+  background: #dcebbf;
+  color: #596f39;
+}
+.slippage-picker input {
+  width: 64px;
+  padding: 3px 8px;
+  border: 1px solid #e3e7dc;
+  border-radius: 20px;
+  font-size: 11px;
+  background: transparent;
+}

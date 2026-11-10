@@ -8,6 +8,7 @@ import {
 } from "react";
 import type { WalletBalance } from "@arkade-os/sdk";
 import { formatAmount, parseAmount, MIN_QUOTE_FUNDING_SECONDS, hasPendingAuthorization, type SavedSwap } from "@satora/taker-sdk";
+import { estimateReceive, minimumReceive, parseMarketSnapshot, type MarketSnapshot } from "@satora/striker-protocol/browser";
 import type { AppConfig } from "./config.js";
 import {
   connectWallet,
@@ -31,6 +32,8 @@ import { SwapDetails } from "./SwapDetails.js";
 import { HowItWorks } from "./HowItWorks.js";
 import { ProtocolPage } from "./ProtocolPage.js";
 import { TradingView } from "./TradingView.js";
+import { ratePrice } from "./trading.js";
+import { SlippagePicker } from "./SlippagePicker.js";
 import { WalletLifecycle, type WalletLifecycleStatus } from "./WalletLifecycle.js";
 import { walletSession } from "./wallet-session.js";
 
@@ -196,6 +199,13 @@ export default function App() {
   const [amount, setAmount] = useState(""),
     [quote, setQuote] = useState<SavedSwap | null>(null),
     [quoting, setQuoting] = useState(false);
+  const [market, setMarket] = useState<MarketSnapshot | null>(null),
+    [ratesError, setRatesError] = useState("");
+  const [slippageBps, setSlippageBps] = useState(() => {
+    try { const v = Number(localStorage.getItem("striker.slippage-bps")); return Number.isInteger(v) && v > 0 && v <= 500 ? v : 50; }
+    catch { return 50; }
+  });
+  const [previousBalance, setPreviousBalance] = useState<WalletBalance | null>(null);
   const [quoteError, setQuoteError] = useState(""),
     [quoteNonce, setQuoteNonce] = useState(0),
     [now, setNow] = useState(Date.now());
@@ -280,29 +290,37 @@ export default function App() {
     }
   }
   const insufficient = !!balance && units > availableSend;
-  // Smallest amount the maker accepts: pay at least 330 sats, or receive at least
-  // 330 sats. Selling tokens needs a rate, so use the latest quote in that
-  // direction with a 2% buffer for price moves, rounded up to the cent.
+  // Live pricing: the best maker rate streams in; orders sign a minimum from it.
+  const direction = reverse ? "btc-to-token" as const : "token-to-btc" as const;
+  const rate = market?.markets.find(m => m.assetId === asset.id && m.direction === direction);
+  const priceLive = !!rate && !!market?.updatedAt && now - market.updatedAt < 15_000;
+  const estimate = rate && units > 0n ? estimateReceive(rate, units) : 0n;
+  const minReceive = estimate > 0n ? minimumReceive(estimate, slippageBps) : 0n;
+  const orderError = !rate || !units || amountError || insufficient ? ""
+    : reverse && units < BigInt(rate.minGive ?? "330") ? `Send at least ${formatAmount(BigInt(rate.minGive ?? "330"), 8)} BTC`
+    : !reverse && estimate < BigInt(rate.minReceive ?? "330") ? "Amount too small: a swap must pay out at least 330 sats"
+    : estimate > BigInt(rate.maxReceive) ? "Not enough maker liquidity for this amount" : "";
+  // Smallest amount the maker accepts: pay at least 330 sats, or receive at least 330 sats.
   const minimumSend = (() => {
-    if (reverse) return 330n;
-    const priced = [quote, ...history].find(s => s?.request.direction === "token-to-btc" &&
-      s.request.assetId === asset.id && BigInt(s.response.offer.quote.x) > 0n);
-    if (!priced) return null;
-    const x = BigInt(priced.response.offer.quote.x), y = BigInt(priced.response.offer.quote.y);
-    const raw = (330n * y * 102n + x * 100n - 1n) / (x * 100n);
+    if (!rate) return reverse ? 330n : null;
+    if (reverse) return BigInt(rate.minGive ?? "330");
+    // Receive at least the minimum, with a 2% buffer for price moves, rounded up to the cent.
+    const need = BigInt(rate.minReceive ?? "330"), give = BigInt(rate.give), out = BigInt(rate.receive);
+    if (out <= 0n) return null;
+    const raw = (need * give * 102n + out * 100n - 1n) / (out * 100n);
     const step = 10n ** BigInt(Math.max(0, asset.decimals - 2));
     return (raw + step - 1n) / step * step;
   })();
-  const minimumTitle = minimumSend === null ? `Enter an amount first; the minimum depends on the ${asset.symbol} price`
+  const minimumTitle = minimumSend === null ? "Waiting for a live price"
     : !!balance && minimumSend > availableSend ? "Your balance is below the minimum swap" : "Smallest swap the maker accepts";
   const needsCarrier = !!balance && balance.available < (reverse ? 660 : 330);
   const expires = quote
     ? Math.max(
         0,
-        Number(quote.response.offer.quote.deadline) - Math.floor(now / 1000),
+        Number(quote.response.offer?.quote.deadline ?? 0) - Math.floor(now / 1000),
       )
     : 0;
-  const receive = quote ? BigInt(quote.response.offer.quote.x) : 0n;
+  const receive = estimate;
   const refreshing = useRef(false);
   const sessionRestoreAttempted = useRef(false);
 
@@ -322,10 +340,11 @@ export default function App() {
     refreshing.current = true;
     setBalanceRefreshing(true);
     try {
-      const [current, previous, lifecycle, maintenance] = await Promise.all([
+      const [current, previous, lifecycle, maintenance, previousCovenant] = await Promise.all([
         account.covenant.getBalance(), account.covenant.getLegacyBalance(), account.covenant.getLifecycle(), account.maintenanceStore.get(),
+        account.previousCovenant.getBalance(),
       ]);
-      setBalance(current); setLegacyBalance(previous);
+      setBalance(current); setLegacyBalance(previous); setPreviousBalance(previousCovenant);
       setLifecycle(lifecycle); setMaintenancePending(!!maintenance);
       maintenanceLogChanged('status', { recoverable: lifecycle.recoverable, expiring: lifecycle.expiring, awaitingSweep: lifecycle.awaitingSweep,
         deposits: lifecycle.deposits, pending: maintenance ? { inputs: maintenance.inputs.length, startedAt: maintenance.startedAt, lastError: maintenance.lastError } : null });
@@ -417,63 +436,22 @@ export default function App() {
     window.addEventListener("storage", changed);
     return () => window.removeEventListener("storage", changed);
   }, [account]);
+  // Live best rates from Striker; works before a wallet is connected.
   useEffect(() => {
-    setQuote(null);
-    setQuoteError("");
-    setQuoting(false);
-    if (
-      !account ||
-      walletAction || maintenancePending ||
-      !asset.id ||
-      !units ||
-      amountError ||
-      insufficient ||
-      needsCarrier ||
-      pending ||
-      !balance
-    )
-      return;
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      setQuoting(true);
-      account.client
-        .quote(
-          asset.id!,
-          units.toString(),
-          reverse ? "btc-to-token" : "token-to-btc",
-        )
-        .then((result) => {
-          if (!cancelled) setQuote(result);
-        })
-        .catch((error) => {
-          if (!cancelled)
-            setQuoteError(
-              errorMessage(error) === "No executable maker quotes"
-                ? "No quote is available for this amount. The maker may be unavailable or have insufficient liquidity."
-                : errorMessage(error),
-            );
-        })
-        .finally(() => {
-          if (!cancelled) setQuoting(false);
-        });
-    }, 450);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
+    if (!config) return;
+    const base = config.strikerUrl ?? `${location.origin}/api/striker`;
+    if (typeof EventSource === "undefined") { setRatesError("Live prices are unavailable in this browser."); return; }
+    const source = new EventSource(`${base}/v1/rates/stream`);
+    source.onmessage = event => {
+      try { setMarket(parseMarketSnapshot(JSON.parse(String(event.data)))); setRatesError(""); }
+      catch { setRatesError("Received an invalid price update."); }
     };
-  }, [
-    account,
-    asset.id,
-    reverse,
-    units,
-    amountError,
-    insufficient,
-    needsCarrier,
-    !!pending,
-    !!balance,
-    quoteNonce,
-    walletAction, maintenancePending,
-  ]);
+    source.onerror = () => setRatesError("Live prices disconnected. Reconnecting…");
+    return () => source.close();
+  }, [config]);
+  useEffect(() => {
+    try { localStorage.setItem("striker.slippage-bps", String(slippageBps)); } catch { /* Session value still applies. */ }
+  }, [slippageBps]);
 
   async function openWallet(event: React.FormEvent) {
     event.preventDefault();
@@ -649,8 +627,48 @@ export default function App() {
       setRevision((value) => value + 1);
     }
   }
+  /** Sign the displayed minimum and let Striker fill it with the best maker. */
+  async function placeOrder() {
+    if (!account || busy || !asset.id || !priceLive || estimate <= 0n || orderError) return;
+    const terms = { assetId: asset.id, direction, giveAmount: units, minReceive, estimate, slippageBps };
+    setBusy(true); setActionError(""); setSelected(null); setModal("result");
+    try {
+      const saved = await withWalletLock(account, () => account.client.placeOrder(terms));
+      setSelected(saved.response.quoteId);
+      await refreshBalance();
+      setAmount("");
+    } catch (error) {
+      setActionError(errorMessage(error) === "No maker can fill this order at or above your minimum right now"
+        ? "The price moved beyond your slippage limit, so nothing was traded. Try again or allow more slippage."
+        : errorMessage(error));
+      // Show the signed order so it can be checked, resumed or cancelled.
+      const latest = account.store.list().filter(swap => swap.response.protocol === "order-v2")
+        .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
+      if (latest && Date.now() - (latest.createdAt ?? 0) < 120_000) setSelected(latest.response.quoteId);
+    } finally {
+      setBusy(false);
+      setRevision((value) => value + 1);
+    }
+  }
+  async function resumeOrder(swap: SavedSwap) {
+    if (!account || busy) return;
+    setBusy(true); setActionError("");
+    try { await withWalletLock(account, () => account.client.resubmitOrder(swap.response.quoteId)); await refreshBalance(); }
+    catch (error) { setActionError(errorMessage(error)); }
+    finally { setBusy(false); setRevision((value) => value + 1); }
+  }
   async function checkStatus() {
     if (!account || !activeSwap || busy) return;
+    if (activeSwap.response.protocol === "order-v2") {
+      setBusy(true); setActionError("");
+      try {
+        const saved = await account.client.refreshOrder(activeSwap.response.quoteId);
+        if (saved.result?.status === "settled") await refreshBalance();
+        else if (saved.result?.status === "failed") setActionError("This order was not filled. Your deposits stay in your wallet.");
+      } catch (error) { setActionError(errorMessage(error)); }
+      finally { setBusy(false); setRevision((value) => value + 1); }
+      return;
+    }
     setBusy(true);
     setActionError("");
     try {
@@ -668,10 +686,28 @@ export default function App() {
       setBusy(false);
     }
   }
+  /** Move funds from the plain wallet address and the older v1 swap covenant into the v2 swap wallet. */
   async function movePreviousFunds() {
     if (!account || walletAction) return;
     setWalletAction(true); setWalletActionError("");
-    try { await withWalletLock(account, () => account.covenant.moveLegacy()); await refreshBalance(); }
+    try {
+      await withWalletLock(account, async () => {
+        if ((legacyBalance?.available ?? 0) >= 330) await account.covenant.moveLegacy();
+        const old = account.previousCovenant;
+        if ((await old.coins()).length) {
+          const key = `striker.covenant-move:${account.publicHex}:${config!.network}`;
+          const saved = localStorage.getItem(key);
+          const prepared = saved ? JSON.parse(saved) : await old.prepareMove(account.covenant);
+          localStorage.setItem(key, JSON.stringify(prepared));
+          await old.submitWithdrawal(prepared);
+          localStorage.removeItem(key);
+        }
+        // Expired v1 deposits come back through a batch straight into the v2 wallet.
+        if ((await old.getLifecycle()).recoverable)
+          await old.maintain(account.maintenanceStore, { destination: account.address, log: maintenanceLog });
+      });
+      await refreshBalance();
+    }
     catch (error) { setWalletActionError(errorMessage(error)); }
     finally { setWalletAction(false); }
   }
@@ -725,17 +761,13 @@ export default function App() {
                 ? `Not enough ${sendSymbol}`
                 : needsCarrier
                   ? "Add BTC to your wallet"
-                  : quoting
-                    ? "Finding your best quote…"
-                    : retryableQuoteError
-                      ? 'Retry quote'
-                    : quoteError
-                      ? "Try another amount"
-                      : quote && expires < MIN_QUOTE_FUNDING_SECONDS
-                        ? "Refresh quote"
-                        : !quote
-                          ? "Enter an amount"
-                          : "Review swap";
+                  : !rate
+                    ? ratesError ? "Live price unavailable" : "Waiting for live price…"
+                    : !priceLive
+                      ? "Live price is stale"
+                      : orderError
+                        ? "Try another amount"
+                        : "Review swap";
   const ctaDisabled =
     walletAction || maintenancePending ||
     !config ||
@@ -746,9 +778,9 @@ export default function App() {
         !!amountError ||
         insufficient ||
         needsCarrier ||
-        quoting ||
-        (!quote && !retryableQuoteError) ||
-        (!!quoteError && !retryableQuoteError)));
+        !priceLive ||
+        !!orderError ||
+        estimate <= 0n));
   const succeeded = activeSwap?.result?.status === "settled",
     refunded = activeSwap?.refund?.status === "refunded";
   const cancelledIntent = activeSwap?.result?.status === "cancelled";
@@ -759,10 +791,7 @@ export default function App() {
       setWalletError("");
       setModal("wallet");
     } else if (pending) inspect(pending);
-    else if (retryableQuoteError) setQuoteNonce(value => value + 1);
-    else if (quote && expires < MIN_QUOTE_FUNDING_SECONDS)
-      setQuoteNonce((value) => value + 1);
-    else if (quote) {
+    else if (priceLive && estimate > 0n && !orderError) {
       setActionError("");
       setModal("review");
     }
@@ -831,10 +860,13 @@ export default function App() {
           }}
           amount={amount} setAmount={setAmount} percentage={percentage}
           minimum={minimum} minimumDisabled={minimumSend === null || (!!balance && minimumSend > availableSend)} minimumTitle={minimumTitle}
-          quote={quote} quoting={quoting} expires={expires} history={history}
+          estimate={estimate} minReceive={minReceive} priceLive={priceLive} history={history}
+          sellPrice={(() => { const m = market?.markets.find(r => r.assetId === asset.id && r.direction === "btc-to-token"); return m ? ratePrice(m, asset.decimals) : null; })()}
+          buyPrice={(() => { const m = market?.markets.find(r => r.assetId === asset.id && r.direction === "token-to-btc"); return m ? ratePrice(m, asset.decimals) : null; })()}
+          slippage={<SlippagePicker value={slippageBps} onChange={setSlippageBps} disabled={busy} />}
           locked={busy || walletAction || maintenancePending || !!pending} cta={walletAction ? 'Maintaining wallet…' : cta} disabled={ctaDisabled || busy}
-          error={configError || amountError || quoteError || balanceError}
-          onReview={primaryClick} onRefreshQuote={() => setQuoteNonce(value => value + 1)}
+          error={configError || amountError || orderError || balanceError || (priceLive ? "" : ratesError)}
+          onReview={primaryClick}
           onRefreshBalance={() => void refreshBalance()}
           onReceive={() => { setWalletError(""); setModal(account ? "receive" : "wallet"); }}
           onInspect={inspect} onActivity={() => setModal("activity")} pending={pending}
@@ -931,29 +963,28 @@ export default function App() {
             </button>
             <div className="amount-card receive-card">
               <div className="card-topline">
-                <span>You receive</span>
-                {asset.demo && reverse && !quote && (
+                <span>You receive{estimate > 0n ? " (estimated)" : ""}</span>
+                {asset.demo && reverse && !estimate && (
                   <span className="demo-badge">DEMO ASSET</span>
                 )}
-                {quote && (
-                  <span
-                    className={`quote-clock ${expires < 10 ? "expiring" : ""}`}
-                  >
+                {rate && (
+                  <span className={`quote-clock ${priceLive ? "" : "expiring"}`}
+                    title={rate ? `1 BTC ≈ ${formatAmount(ratePrice(rate, asset.decimals), 2)} ${asset.symbol}` : undefined}>
                     <span className="status-dot" />
-                    {expires ? `${expires}s quote` : "Quote expired"}
+                    {priceLive ? "Live price" : "Price stale"}
                   </span>
                 )}
               </div>
               <div className="amount-row">
                 <output
                   className={
-                    quote ? "receive-value has-value" : "receive-value"
+                    estimate > 0n ? "receive-value has-value" : "receive-value"
                   }
                   aria-label={`${receiveSymbol} receive amount`}
                 >
-                  {quoting ? (
+                  {units > 0n && !rate && !amountError ? (
                     <span className="amount-skeleton" />
-                  ) : quote ? (
+                  ) : estimate > 0n ? (
                     formatAmount(receive, receiveDecimals, reverse)
                   ) : (
                     "0"
@@ -977,11 +1008,11 @@ export default function App() {
                   </b>{" "}
                   {receiveSymbol}
                 </span>
-                {quote && (
+                {minReceive > 0n && (
                   <span className="sats-label">
-                    {reverse
-                      ? `${formatAmount(receive, asset.decimals)} ${asset.symbol}`
-                      : `${receive.toLocaleString()} sats`}
+                    Min {reverse
+                      ? `${formatAmount(minReceive, asset.decimals)} ${asset.symbol}`
+                      : `${minReceive.toLocaleString()} sats`}
                   </span>
                 )}
               </div>
@@ -1014,6 +1045,14 @@ export default function App() {
                   <span>Token carrier</span>
                   <span>330 sats</span>
                 </div>
+                <div>
+                  <span>Max slippage</span>
+                  <SlippagePicker value={slippageBps} onChange={setSlippageBps} disabled={busy} />
+                </div>
+                <div>
+                  <span>Minimum received</span>
+                  <span>{minReceive > 0n ? `${formatAmount(minReceive, receiveDecimals, reverse)} ${receiveSymbol}` : "—"}</span>
+                </div>
                 <p>
                   {reverse
                     ? "The 330 sats carrier stays with the tokens you receive in your wallet."
@@ -1021,9 +1060,9 @@ export default function App() {
                 </p>
               </div>
             )}
-            {(configError || amountError || quoteError || balanceError) && (
+            {(configError || amountError || orderError || balanceError || (ratesError && !priceLive)) && (
               <div role="alert" className="inline-error">
-                {configError || amountError || quoteError || balanceError}
+                {configError || amountError || orderError || balanceError || ratesError}
                 {balanceError && (
                   <button onClick={() => void refreshBalance()}>Refresh</button>
                 )}
@@ -1162,9 +1201,11 @@ export default function App() {
                   : "Unlock with your password again after reloading this tab."}
               </p>
               <p className="small-print">Deposits arrive directly in your swap wallet. Payments and change return here after each swap.</p>
-              {legacyBalance && legacyBalance.total > 0 && <div className="legacy-wallet-funds">
-                <p className="small-print">Previous wallet: {legacyBalance.total.toLocaleString()} sats
-                  {legacyBalance.assets.length ? ` and ${legacyBalance.assets.length} asset type(s)` : ""}. Move these funds to make them available for swaps.</p>
+              {((legacyBalance?.total ?? 0) > 0 || (previousBalance?.total ?? 0) > 0) && <div className="legacy-wallet-funds">
+                <p className="small-print">Previous wallet: {((legacyBalance?.total ?? 0) + (previousBalance?.total ?? 0)).toLocaleString()} sats
+                  {new Set([...(legacyBalance?.assets ?? []), ...(previousBalance?.assets ?? [])].map(a => a.assetId)).size
+                    ? ` and ${new Set([...(legacyBalance?.assets ?? []), ...(previousBalance?.assets ?? [])].map(a => a.assetId)).size} asset type(s)` : ""}.
+                  Move these funds into your swap wallet to trade them with live prices.</p>
                 <button className="secondary-button" disabled={walletAction || busy || maintenancePending} onClick={() => void movePreviousFunds()}>
                   {walletAction ? "Moving funds…" : "Move previous wallet funds"}
                 </button>
@@ -1534,6 +1575,7 @@ export default function App() {
                       ? "Complete"
                       : swap.result?.status === "cancelled" ? "Cancelled" : swap.refund?.status === "refunded"
                         ? "Returned"
+                        : swap.response.protocol === "order-v2" && swap.result?.status === "failed" ? "Not filled"
                         : swap.intentInputs && !hasPendingAuthorization(swap, now) ? "Authorization expired"
                         : "In progress"}{" "}
                     ↗
@@ -1544,7 +1586,7 @@ export default function App() {
           )}
         </Modal>
       )}
-      {modal === "review" && quote && (
+      {modal === "review" && account && (
         <Modal
           title="Make your move."
           close={() => {
@@ -1552,7 +1594,7 @@ export default function App() {
           }}
         >
           <p className="modal-caption">
-            Your signed quote is ready. Both sides settle together on Arkade.
+            Live price from the best maker. You sign a minimum; Striker fills it with the best quote at that moment.
           </p>
           <div className="review-assets">
             <div>
@@ -1560,8 +1602,7 @@ export default function App() {
               <span>
                 You send
                 <strong>
-                  {formatAmount(BigInt(quote.request.giveAmount), sendDecimals)}{" "}
-                  {sendSymbol}
+                  {formatAmount(units, sendDecimals)} {sendSymbol}
                 </strong>
               </span>
             </div>
@@ -1569,15 +1610,22 @@ export default function App() {
             <div>
               <Coin bitcoin={!reverse} symbol={receiveSymbol} />
               <span>
-                You receive
+                You receive about
                 <strong>
-                  {formatAmount(receive, receiveDecimals, reverse)}{" "}
-                  {receiveSymbol}
+                  {formatAmount(estimate, receiveDecimals, reverse)} {receiveSymbol}
                 </strong>
               </span>
             </div>
           </div>
           <div className="review-facts">
+            <div>
+              <span>Minimum received</span>
+              <strong>{formatAmount(minReceive, receiveDecimals, reverse)} {receiveSymbol}</strong>
+            </div>
+            <div>
+              <span>Max slippage</span>
+              <SlippagePicker value={slippageBps} onChange={setSlippageBps} disabled={busy} />
+            </div>
             <div>
               <span>Network</span>
               <strong>
@@ -1587,39 +1635,24 @@ export default function App() {
             </div>
             <div>
               <span>Swap costs</span>
-              <strong>330 sats token carrier</strong>
+              <strong>330 sats token carrier · 0 fees</strong>
             </div>
             <div>
-              <span>Service & network fees</span>
-              <strong>0 sats</strong>
-            </div>
-            <div>
-              <span>Quote expires in</span>
-              <strong className={expires < 10 ? "danger" : ""}>
-                {expires}s
-              </strong>
+              <span>Order valid for</span>
+              <strong>60s</strong>
             </div>
           </div>
           <button
             className="swap-button modal-primary"
-            disabled={busy || quoting}
-            onClick={() => {
-              if (expires < MIN_QUOTE_FUNDING_SECONDS) {
-                setModal(null);
-                setQuoteNonce((value) => value + 1);
-              } else void execute(quote);
-            }}
+            disabled={busy || !priceLive || !!orderError || estimate <= 0n}
+            onClick={() => void placeOrder()}
           >
-            {expires < MIN_QUOTE_FUNDING_SECONDS ? "Refresh quote" : "Confirm swap"}
+            {!priceLive ? "Waiting for live price…" : "Confirm swap"}
             <Icon>
               <path d="M4 12h16m-6-6 6 6-6 6" />
             </Icon>
           </button>
-          {expires < MIN_QUOTE_FUNDING_SECONDS && (
-            <p className="inline-error">
-              Refresh this quote so there is enough time to authorize and settle your swap.
-            </p>
-          )}
+          {orderError && <p className="inline-error">{orderError}</p>}
         </Modal>
       )}
       {modal === "result" && (
@@ -1657,6 +1690,7 @@ export default function App() {
                 ? "Your unspent payment has been returned."
                 : busy
                   ? "Keep this window open while your swap settles."
+                  : displayedSwap?.response.protocol === "order-v2" ? (displayedSwap.result?.status === "failed" ? "This order was not filled. Your deposits stay in your wallet." : "Check the order status, submit it again, or cancel it. Unspent deposits stay in your wallet.")
                   : displayedSwap?.response.protocol === "intent-v1" ? "Check the swap status or resume execution. Unspent deposits remain in your wallet." : "Check the swap status, resume execution, or return an unspent offer."}
           </p>
           {displayedSwap && (
@@ -1674,8 +1708,9 @@ export default function App() {
               </span>
               <span>→</span>
               <strong>
+                {!displayedSwap.response.offer && displayedSwap.order ? "≥ " : ""}
                 {formatAmount(
-                  BigInt(displayedSwap.response.offer.quote.x),
+                  BigInt(displayedSwap.response.offer?.quote.x ?? displayedSwap.order?.minReceive ?? 0),
                   displayedSwap.request.direction === "btc-to-token"
                     ? asset.decimals
                     : 8,
@@ -1691,7 +1726,7 @@ export default function App() {
             <div className="progress-list">
               <div className="done">
                 <Check />
-                Quote verified locally
+                {displayedSwap?.response.protocol === "order-v2" || !displayedSwap ? "Live price checked" : "Quote verified locally"}
               </div>
               <div className={(activeSwap?.funding || activeSwap?.intentInputs) ? "done" : "current"}>
                 {(activeSwap?.funding || activeSwap?.intentInputs) ? (
@@ -1699,11 +1734,11 @@ export default function App() {
                 ) : (
                   <span className="step-dot" />
                 )}
-                {displayedSwap?.response.protocol === "intent-v1" ? "Sign swap authorization" : "Fund your swap"}
+                {displayedSwap?.response.protocol === "intent-v1" || displayedSwap?.response.protocol === "order-v2" || !displayedSwap ? "Sign your order" : "Fund your swap"}
               </div>
               <div className={(activeSwap?.funding || activeSwap?.intentInputs) ? "current" : ""}>
                 <span className="step-dot" />
-                Settle through Striker
+                Match the best maker and settle
               </div>
             </div>
           )}
@@ -1746,6 +1781,16 @@ export default function App() {
               >
                 Check status
               </button>
+              {activeSwap.response.protocol === "order-v2" && hasPendingAuthorization(activeSwap, now) && <>
+                <button className="secondary-button" onClick={() => void resumeOrder(activeSwap)}>Submit order again</button>
+                <button className="text-button" onClick={async () => {
+                  if (!account || busy) return;
+                  setBusy(true); setActionError("");
+                  try { await withWalletLock(account, () => account.client.cancelIntent(activeSwap.response.quoteId)); setRevision(v => v + 1); await refreshBalance(); }
+                  catch (error) { setActionError(errorMessage(error)); }
+                  finally { setBusy(false); }
+                }}>Cancel order and keep funds</button>
+              </>}
               {activeSwap.response.protocol === "intent-v1" && <>
                 <button className="secondary-button" onClick={() => void execute(activeSwap)}>Resume execution</button>
                 <button className="text-button" onClick={async () => {
