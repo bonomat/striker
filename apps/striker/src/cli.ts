@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { args, bytes, connectChain, decimal, fundedCoin, hex, HttpError, listen, liveMaker, main,
   nowSeconds, object, offerJSON, p2tr, parseOffer, parseQuoteRequest, port, requestJSON, required, loadConfig,
   buildIntentSettlement, settle, settleIntent, reusableTakerContract, verifyIntent, parseTakerInput, coinsAt, MAX_INTENT_INPUTS, takerContract,
-  validateOfferFor, EventStream, parseDirection, parseOrderRequest, orderId, assetId,
+  validateOfferFor, EventStream, cachingChain, parseDirection, parseOrderRequest, orderId, assetId,
   type MarketRequest, type MarketRate, type MarketSnapshot, type OrderRequest, type OrderStatus, type QuoteRequest, type SignedOffer } from '@satora/striker-protocol';
 
 const HELP = 'striker init | serve [--makers URL[,URL]] [--host HOST] [--port PORT] [--config-dir DIR] [--network regtest|mutinynet]\nConfig defaults to .striker/config.json (or STRIKER_CONFIG_DIR). Striker has no private key.';
@@ -36,18 +36,17 @@ main(async () => {
   const orders = new Map<string, Order>();
   const slippageOrders = new Map<string, SlippageOrder>();
 
-  /** Ask every configured maker for a firm quote; best (largest output) first. */
-  async function collectOffers(request: MarketRequest) {
+  /** Ask every configured maker for a firm quote and check its live pool; best (largest output) first. */
+  async function collectOffers(request: MarketRequest, view = chain) {
     // Maker endpoints are operator configuration. Takers cannot supply URLs.
     const results = await Promise.allSettled(makers.map(async url => {
       const offer = parseOffer(await requestJSON(`${url}/v1/quotes`,
         { assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }));
       validateOfferFor(offer, request);
-      await liveMaker(chain, offer);
-      return offer;
+      return { offer, maker: await liveMaker(view, offer) };
     }));
     const offers = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
-    offers.sort((a, b) => a.quote.x === b.quote.x ? 0 : a.quote.x > b.quote.x ? -1 : 1);
+    offers.sort((a, b) => a.offer.quote.x === b.offer.quote.x ? 0 : a.offer.quote.x > b.offer.quote.x ? -1 : 1);
     if (!offers.length) {
       // Only expose known failures agreed on by every configured maker.
       const reasons = results.map(result => result.status === 'rejected' && result.reason instanceof HttpError
@@ -96,32 +95,50 @@ main(async () => {
   const rateTimer = setInterval(() => void pollRates(), pollMs);
   void pollRates();
 
+  // One JSON line per order step with elapsed time, for journalctl.
+  const orderLog = (id: string, started: number, step: string, details: Record<string, unknown> = {}) =>
+    console.log(JSON.stringify({ service: 'striker-order', order: id.slice(0, 12), step, ms: Date.now() - started, ...details }));
   async function executeSlippageOrder(id: string, order: SlippageOrder) {
+    const started = Date.now();
     const { request } = order, owner = bytes(request.takerPublicKey, 32, 'takerPublicKey');
+    orderLog(id, started, 'received', { direction: request.direction, give: request.giveAmount, minReceive: request.inputs[0]!.terms.receive, inputs: request.inputs.length });
     const user = reusableTakerContract(chain, owner, 2), terms = request.inputs[0]!.terms;
-    const minimum = BigInt(terms.receive);
-    const offers = (await collectOffers({ assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }))
-      .filter(offer => offer.quote.x >= minimum);
-    if (!offers.length) throw new HttpError(422, 'No maker can fill this order at or above your minimum right now');
-    const available = await coinsAt(chain, user.tree);
-    const coins = request.inputs.map(input => {
-      const coin = available.find(c => c.txid === input.coin.txid && c.vout === input.coin.vout);
-      if (!coin) throw new Error('Authorized taker input is no longer spendable; check wallet activity');
-      return coin;
+    const minimum = BigInt(terms.receive), view = cachingChain(chain);
+    // Indexer round trips dominate latency: load the taker's deposits (and the
+    // transactions settlement must attach) while makers are quoting.
+    const takerCoins = coinsAt(view, user.tree).then(async available => {
+      const coins = request.inputs.map(input => {
+        const coin = available.find(c => c.txid === input.coin.txid && c.vout === input.coin.vout);
+        if (!coin) throw new Error('Authorized taker input is no longer spendable; check wallet activity');
+        return coin;
+      });
+      await view.indexer.getVirtualTxs(coins.map(c => c.txid));
+      return coins;
     });
+    takerCoins.catch(() => {});
+    const quoted = await collectOffers({ assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }, view);
+    const offers = quoted.filter(({ offer }) => offer.quote.x >= minimum);
+    orderLog(id, started, 'quotes collected', { quotes: quoted.length, eligible: offers.length, best: quoted[0]?.offer.quote.x.toString() });
+    if (!offers.length) throw new HttpError(422, 'No maker can fill this order at or above your minimum right now');
+    const coins = await takerCoins;
+    orderLog(id, started, 'taker deposits loaded');
     const taker = { ...user, owner, coins, inputs: request.inputs, version: 2 as const };
     // Choose the best offer that still builds. Nothing is submitted yet, so
     // falling through to the next maker here cannot double-spend anything.
-    for (const offer of offers) {
-      let maker;
-      try {
-        maker = await liveMaker(chain, offer);
-        order.txid = buildIntentSettlement(chain, offer, maker, taker).arkTx.id;
-      } catch { continue; }
+    for (const { offer, maker } of offers) {
+      try { order.txid = buildIntentSettlement(view, offer, maker, taker).arkTx.id; }
+      catch { continue; }
       order.offer = offer;
+      orderLog(id, started, 'settlement built', { txid: order.txid, receive: offer.quote.x.toString() });
       // One submission only: a transport failure may still have settled.
-      const result = await settleIntent(chain, offer, maker, taker);
-      order.txid = result.txid; order.status = 'settled';
+      try {
+        const result = await settleIntent(view, offer, maker, taker);
+        order.txid = result.txid; order.status = 'settled';
+        orderLog(id, started, 'settled', { txid: result.txid });
+      } catch (error) {
+        orderLog(id, started, 'settlement failed', { error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
       return;
     }
     throw new HttpError(503, 'Maker liquidity moved while matching; submit the same order again');
@@ -193,7 +210,7 @@ main(async () => {
       }
       if (method === 'POST' && (path === '/v1/quotes' || path === '/v2/quotes')) {
         const request = parseQuoteRequest(body);
-        const offer = (await collectOffers(request))[0]!;
+        const { offer } = (await collectOffers(request))[0]!;
         for (const [id, order] of orders) if (order.offer.quote.deadline <= nowSeconds() && order.status === 'quoted') orders.delete(id);
         if (orders.size >= 1000) throw new HttpError(503, 'Order capacity reached; restart clears this PoC store');
         const intent = path === '/v2/quotes';

@@ -66,6 +66,21 @@ export async function expiryContext(chain: Chain, coins: VirtualCoin[]) {
 export async function fundedCoin(chain: Chain, tree: VtxoScript, txid: string, vout?: number) {
   return waitFor(async () => (await coinsAt(chain, tree)).find(c => c.txid === txid && (vout === undefined || c.vout === vout)), 'funded covenant');
 }
+/** A chain view that fetches each virtual transaction once. Indexer round trips
+ * dominate order latency, so one order shares lookups across matching and settling. */
+export function cachingChain(chain: Chain): Chain {
+  const base = chain.indexer, cache = new Map<string, string>();
+  const indexer = Object.create(base) as Chain['indexer'];
+  indexer.getVirtualTxs = (async (txids: string[]) => {
+    const missing = [...new Set(txids.filter(id => !cache.has(id)))];
+    if (missing.length) {
+      const { txs } = await base.getVirtualTxs(missing);
+      for (const psbt of txs) cache.set(Transaction.fromPSBT(decodeBase64(psbt)).id, psbt);
+    }
+    return { txs: txids.flatMap(id => cache.has(id) ? [cache.get(id)!] : []) };
+  }) as Chain['indexer']['getVirtualTxs'];
+  return { ...chain, indexer };
+}
 export async function epochOf(chain: Chain, coin: Coin): Promise<bigint> {
   const { txs } = await chain.indexer.getVirtualTxs([coin.txid]);
   const tx = txs.map(psbt => Transaction.fromPSBT(decodeBase64(psbt))).find(tx => tx.id === coin.txid);

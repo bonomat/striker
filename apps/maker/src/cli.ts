@@ -91,6 +91,9 @@ main(async () => {
     type Rate = { assetId: string; direction: string; available: boolean; give?: string; receive?: string; maxReceive?: string; minGive?: string; minReceive?: string; reason?: string };
     let rates: { updatedAt: number | null; validForMs: number; rates: Rate[] } = { updatedAt: null, validForMs: refreshMs * 2, rates: [] };
     let refreshing = false;
+    // Live pool tip and epoch per state file, refreshed with the rates. Quotes read
+    // this instead of two indexer round trips; Striker re-checks the real tip before settling.
+    const pools = new Map<string, { coin: Awaited<ReturnType<typeof coinsAt>>[number]; epoch: bigint; at: number }>();
     const refreshRates = async () => {
       if (refreshing) return;
       refreshing = true;
@@ -101,8 +104,11 @@ main(async () => {
           try {
             if (maintaining) throw new Error('Maker liquidity is being renewed');
             const coins = await coinsAt(chain, makerContract(chain, state).tree);
-            if (coins.length !== 1 || ['recoverable', 'awaiting-sweep'].includes(depositState(coins[0]!))) throw new Error('Maker liquidity is unavailable');
+            if (coins.length !== 1 || ['recoverable', 'awaiting-sweep'].includes(depositState(coins[0]!))) { pools.delete(file); throw new Error('Maker liquidity is unavailable'); }
             const coin = coins[0]!, reverse = direction === 'btc-to-token';
+            const cached = pools.get(file);
+            pools.set(file, { coin, at: Date.now(),
+              epoch: cached && cached.coin.txid === coin.txid && cached.coin.vout === coin.vout ? cached.epoch : await epochOf(chain, coin) });
             // A large reference trade keeps rounding well below a basis point.
             const unit = reverse ? RATE_UNIT : RATE_UNIT * 10_000n;
             const receive = livePricing ? await livePricing.output(unit, direction)
@@ -112,6 +118,7 @@ main(async () => {
             next.push({ assetId: id, direction, available: maxReceive > 0n && receive > 0n, give: unit.toString(), receive: receive.toString(),
               maxReceive: (maxReceive > 0n ? maxReceive : 0n).toString(), ...(reverse ? { minGive: '330' } : { minReceive: '330' }) });
           } catch (error) {
+            pools.delete(file);
             next.push({ assetId: id, direction, available: false, reason: error instanceof Error ? error.message : 'Unavailable' });
           }
         }
@@ -126,11 +133,15 @@ main(async () => {
         if (method !== 'POST' || path !== '/v1/quotes') throw new HttpError(404, 'Not found');
         const request = parseMarketRequest(body);
         if (maintaining) throw new HttpError(503, 'Maker liquidity is being renewed; try again shortly');
-        const state = files.map(file => loadState(file, chain, key)).find(s => parseDirection(s.deposit.direction) === parseDirection(request.direction) && hex(s.deposit.wantAsset) === request.assetId);
-        if (!state) throw new HttpError(422, 'Unsupported asset or swap direction');
+        const file = files.find(f => { const s = loadState(f, chain, key);
+          return parseDirection(s.deposit.direction) === parseDirection(request.direction) && hex(s.deposit.wantAsset) === request.assetId; });
+        const state = file && loadState(file, chain, key);
+        if (!file || !state) throw new HttpError(422, 'Unsupported asset or swap direction');
         const { tree } = makerContract(chain, state);
         if (request.assetId !== hex(state.deposit.wantAsset)) throw new HttpError(422, 'Unsupported asset');
-        const coins = await coinsAt(chain, tree);
+        const pool = pools.get(file);
+        const fresh = pool && Date.now() - pool.at < refreshMs * 2 ? pool : undefined;
+        const coins = fresh ? [fresh.coin] : await coinsAt(chain, tree);
         if (coins.length !== 1) {
           const held = await covenantCoins(chain, tree);
           if (held.some(c => ['recoverable', 'awaiting-sweep'].includes(depositState(c))))
@@ -151,7 +162,7 @@ main(async () => {
           throw new HttpError(422, 'Swap amount is too small');
         if (reverse ? (held <= x || coin.assets?.length !== 1) : BigInt(coin.value) - x < 330n)
           throw new HttpError(422, 'Insufficient maker liquidity');
-        const quote = { x, y, epoch: await epochOf(chain, coin), deadline: nowSeconds() + BigInt(ttl) };
+        const quote = { x, y, epoch: fresh?.epoch ?? await epochOf(chain, coin), deadline: nowSeconds() + BigInt(ttl) };
         return offerJSON({ deposit: state.deposit, quote, signature: signQuote(state.deposit, quote, key) });
       });
     const timer = enabled ? setInterval(() => void maintain(), intervalMs) : undefined;

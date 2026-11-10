@@ -124,7 +124,8 @@ main(async () => {
       const rate = (await client.rates()).markets.find(m => m.assetId === id && m.direction === direction);
       if (!rate) throw new Error('No live maker rate for this market');
       const estimate = estimateReceive(rate, give), minReceive = minimumReceive(estimate, slippageBps);
-      const swap = await client.placeOrder({ assetId: id, direction, giveAmount: give, minReceive, estimate, slippageBps });
+      const swap = await client.placeOrder({ assetId: id, direction, giveAmount: give, minReceive, estimate, slippageBps,
+        log: (event, details) => console.error(JSON.stringify({ order: event, ...details })) });
       console.log(JSON.stringify({ orderId: swap.response.quoteId, estimate: estimate.toString(), minReceive: minReceive.toString(),
         received: swap.response.offer?.quote.x, result: swap.result }));
       return;

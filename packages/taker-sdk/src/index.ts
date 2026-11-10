@@ -194,8 +194,18 @@ export class TakerClient {
    * `minReceive`, before `ttlSeconds` pass. Striker fills it with the best maker.
    */
   async placeOrder(params: { assetId: string; direction: Direction; giveAmount: bigint; minReceive: bigint;
-    ttlSeconds?: number; estimate?: bigint; slippageBps?: number }): Promise<SavedSwap> {
+    ttlSeconds?: number; estimate?: bigint; slippageBps?: number;
+    /** Deposits already loaded from the v2 covenant (e.g. prefetched); saves an indexer round trip. */
+    coins?: Coin[];
+    /** Progress hook with elapsed milliseconds per step. */
+    log?: (event: string, details?: Record<string, unknown>) => void }): Promise<SavedSwap> {
     const { actor, chain, store } = this.options;
+    const started = Date.now();
+    let last = started;
+    const log = (event: string, details: Record<string, unknown> = {}) => {
+      const at = Date.now();
+      params.log?.(event, { ...details, stepMs: at - last, totalMs: at - started }); last = at;
+    };
     if (this.covenantVersion !== 2) throw new Error('Slippage orders need a v2 covenant wallet');
     const sign = actor.signIntent;
     if (!sign) throw new Error('This wallet cannot authorize orders');
@@ -203,10 +213,14 @@ export class TakerClient {
     if (params.giveAmount <= 0n || params.minReceive <= 0n) throw new Error('Order amounts must be positive');
     if (!Number.isInteger(ttl) || ttl < 15 || ttl > 600) throw new Error('Order lifetime must be 15-600 seconds');
     return this.exclusive('order', async () => {
+      log('start', { direction: params.direction, give: params.giveAmount.toString(), minReceive: params.minReceive.toString() });
       if (await this.options.maintenanceStore?.get()) throw new Error('Complete or inspect pending wallet maintenance before swapping');
       await checkEmulator(chain);
+      log('emulator checked');
       const contract = reusableTakerContract(chain, actor.publicKey, 2), reverse = params.direction === 'btc-to-token';
-      const selected = selectContributions(await coinsAt(chain, contract.tree), id,
+      const coins = params.coins ?? await coinsAt(chain, contract.tree);
+      log('deposits loaded', { deposits: coins.length, prefetched: !!params.coins });
+      const selected = selectContributions(coins, id,
         reverse ? params.giveAmount + 330n : 330n, reverse ? 0n : params.giveAmount);
       const batch = selected.map(item => ({ coin: item.coin, paySats: item.sats, payTokens: item.tokens }));
       const order = { assetId: Uint8Array.from(id.match(/../g)!, b => parseInt(b, 16)), direction: params.direction,
@@ -222,10 +236,19 @@ export class TakerClient {
           ...(params.estimate === undefined ? {} : { estimate: params.estimate.toString() }),
           ...(params.slippageBps === undefined ? {} : { slippageBps: params.slippageBps }) },
         intentInputs: inputs, createdAt: Date.now() };
+      log('signed', { orderId: saved.response.quoteId, inputs: inputs.length, deadline: order.deadline.toString() });
       // Persist the exact authorization first: it stays valid until its deadline.
       await store.put(saved);
       saved.intentSubmittedAt = Date.now(); await store.put(saved);
-      return this.submitOrder(saved);
+      log('submitting to Striker');
+      try {
+        const result = await this.submitOrder(saved);
+        log('done', { status: result.result?.status, txid: result.result?.txid, received: result.response.offer?.quote.x });
+        return result;
+      } catch (error) {
+        log('failed', { error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
     });
   }
   private async submitOrder(saved: SavedSwap): Promise<SavedSwap> {

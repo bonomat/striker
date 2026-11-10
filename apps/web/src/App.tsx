@@ -238,6 +238,9 @@ export default function App() {
     try { return localStorage.getItem('striker.auto-renew') !== 'false'; } catch { return true; }
   });
   const maintenanceRunning = useRef(false), lastMaintenanceAttempt = useRef(0);
+  // Deposits prefetched when the review opens, so confirming skips an indexer round trip.
+  const prefetchedCoins = useRef<{ at: number; coins: Promise<Awaited<ReturnType<ConnectedWallet["covenant"]["coins"]>>> } | null>(null);
+  const [orderPhase, setOrderPhase] = useState<"signing" | "matching" | null>(null);
   const [walletMode, setWalletMode] = useState<"create" | "import">("create"),
     [costsOpen, setCostsOpen] = useState(false),
     [copied, setCopied] = useState(false);
@@ -630,9 +633,17 @@ export default function App() {
   /** Sign the displayed minimum and let Striker fill it with the best maker. */
   async function placeOrder() {
     if (!account || busy || !asset.id || !priceLive || estimate <= 0n || orderError) return;
-    const terms = { assetId: asset.id, direction, giveAmount: units, minReceive, estimate, slippageBps };
-    setBusy(true); setActionError(""); setSelected(null); setModal("result");
+    setBusy(true); setActionError(""); setSelected(null); setModal("result"); setOrderPhase("signing");
     try {
+      // Reuse deposits loaded when the review opened, if recent; otherwise load fresh.
+      const prefetch = prefetchedCoins.current;
+      prefetchedCoins.current = null;
+      const coins = prefetch && Date.now() - prefetch.at < 30_000 ? await prefetch.coins.catch(() => undefined) : undefined;
+      const terms = { assetId: asset.id, direction, giveAmount: units, minReceive, estimate, slippageBps, coins,
+        log: (event: string, details?: Record<string, unknown>) => {
+          orderLog(event, details);
+          if (event === "submitting to Striker") setOrderPhase("matching");
+        } };
       const saved = await withWalletLock(account, () => account.client.placeOrder(terms));
       setSelected(saved.response.quoteId);
       await refreshBalance();
@@ -646,7 +657,7 @@ export default function App() {
         .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0];
       if (latest && Date.now() - (latest.createdAt ?? 0) < 120_000) setSelected(latest.response.quoteId);
     } finally {
-      setBusy(false);
+      setBusy(false); setOrderPhase(null);
       setRevision((value) => value + 1);
     }
   }
@@ -793,6 +804,9 @@ export default function App() {
     } else if (pending) inspect(pending);
     else if (priceLive && estimate > 0n && !orderError) {
       setActionError("");
+      const coins = account.covenant.coins();
+      coins.catch(() => {});
+      prefetchedCoins.current = { at: Date.now(), coins };
       setModal("review");
     }
   };
@@ -1728,17 +1742,17 @@ export default function App() {
                 <Check />
                 {displayedSwap?.response.protocol === "order-v2" || !displayedSwap ? "Live price checked" : "Quote verified locally"}
               </div>
-              <div className={(activeSwap?.funding || activeSwap?.intentInputs) ? "done" : "current"}>
-                {(activeSwap?.funding || activeSwap?.intentInputs) ? (
+              <div className={(activeSwap?.funding || activeSwap?.intentInputs || orderPhase === "matching") ? "done" : "current"}>
+                {(activeSwap?.funding || activeSwap?.intentInputs || orderPhase === "matching") ? (
                   <Check />
                 ) : (
                   <span className="step-dot" />
                 )}
                 {displayedSwap?.response.protocol === "intent-v1" || displayedSwap?.response.protocol === "order-v2" || !displayedSwap ? "Sign your order" : "Fund your swap"}
               </div>
-              <div className={(activeSwap?.funding || activeSwap?.intentInputs) ? "current" : ""}>
+              <div className={(activeSwap?.funding || activeSwap?.intentInputs || orderPhase === "matching") ? "current" : ""}>
                 <span className="step-dot" />
-                Match the best maker and settle
+                {orderPhase === "matching" ? "Matching the best maker and settling on Arkade (about 15s)…" : "Match the best maker and settle"}
               </div>
             </div>
           )}
@@ -1833,4 +1847,9 @@ let lastMaintenanceStatus = '';
 function maintenanceLogChanged(event: string, details: Record<string, unknown>) {
   const key = JSON.stringify(details);
   if (key !== lastMaintenanceStatus) { lastMaintenanceStatus = key; maintenanceLog(event, details); }
+}
+
+/** Order trace in the browser console; filter by "[striker order]". Each step has its own and total ms. */
+function orderLog(event: string, details?: Record<string, unknown>) {
+  console.info(`[striker order] ${new Date().toISOString()} ${event}`, details ?? "");
 }
