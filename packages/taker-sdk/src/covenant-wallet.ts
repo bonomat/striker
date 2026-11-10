@@ -1,5 +1,5 @@
 import { ArkAddress, asset, buildOffchainTx, Extension, type Identity, type IWallet, type WalletBalance } from '@arkade-os/sdk';
-import { asInput, coinsAt, covenantInventory, maintainCovenant, submitOwnerTransfer, encodeBase64, reusableTakerContract, equalBytes, type Chain, type MaintenanceStore } from '@satora/striker-protocol/browser';
+import { asInput, coinsAt, covenantInventory, maintainCovenant, submitOwnerTransfer, encodeBase64, reusableTakerContract, equalBytes, type Chain, type MaintenanceStore, type MaintenanceLog } from '@satora/striker-protocol/browser';
 
 /** Indexer-backed reusable wallet. The SDK wallet remains available for legacy funds. */
 export class CovenantWallet {
@@ -18,7 +18,7 @@ export class CovenantWallet {
       awaitingSweep: states.filter(c => c.state === 'awaiting-sweep').length };
   }
   /** Call under the same wallet lock as swaps, with no pending authorizations. */
-  async maintain(store: MaintenanceStore, options: { retryUnsettled?: boolean } = {}) {
+  async maintain(store: MaintenanceStore, options: { retryUnsettled?: boolean; log?: MaintenanceLog } = {}) {
     if (!this.legacy.settle || !this.legacy.getAddress || !this.legacy.getVtxos || !this.legacy.getContractManager)
       throw new Error('This wallet does not support batch recovery and renewal');
     return maintainCovenant({ chain: this.chain, wallet: this.legacy as IWallet, identity: this.identity,

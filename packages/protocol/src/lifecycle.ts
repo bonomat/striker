@@ -65,7 +65,12 @@ export interface MaintenanceOperation {
   supersededInputs?: { txid: string; vout: number }[];
   bridge?: PreparedOwnerTransfer;
   settlementInputs?: { txid: string; vout: number }[];
+  /** Set with `completed` when the recorded inputs were spent by something else. */
+  supersededAt?: number;
 }
+/** Optional progress hook; receives plain JSON-safe details, never secrets. */
+export type MaintenanceLog = (event: string, details?: Record<string, unknown>) => void;
+const outpoints = (coins: { txid: string; vout: number }[]) => coins.map(c => `${c.txid}:${c.vout}`);
 export interface MaintenanceStore {
   /** Return only the pending operation; archive completed receipts separately. */
   get(): Promise<MaintenanceOperation | undefined>;
@@ -137,17 +142,25 @@ export async function maintainCovenant(options: {
   packets?: Parameters<typeof Extension.create>[0];
   /** Explicit resume only: cancel an old queued intent before retrying its exact inputs. */
   retryUnsettled?: boolean;
+  log?: MaintenanceLog;
 }) {
   const { chain, wallet, identity, sourceTree, destination, store } = options;
+  const log: MaintenanceLog = options.log ?? (() => {});
   const source = hex(sourceTree.pkScript), decoded = ArkAddress.decode(destination);
   if (!decoded.serverPubKey.every((b, i) => b === chain.server[i]) || decoded.hrp !== 'tark') throw new Error('Maintenance destination belongs to another server or network');
   const ownerAddress = await wallet.getAddress();
   let operation = await store.get();
   if (operation && (operation.network !== chain.settings.network || operation.source !== source || operation.destination !== destination || operation.ownerAddress !== ownerAddress))
     throw new Error('Maintenance journal belongs to another wallet or covenant');
-  if (operation?.completed) return operation;
+  log('start', { retryUnsettled: !!options.retryUnsettled, pending: operation ? {
+    inputs: outpoints(operation.settlementInputs ?? operation.inputs), amount: operation.amount, startedAt: operation.startedAt,
+    cancelledAt: operation.cancelledAt, settlementTxid: operation.settlementTxid, bridge: operation.bridge?.txid,
+    transfer: operation.transfer?.txid, completed: operation.completed, lastError: operation.lastError } : null });
+  if (operation?.completed) { log('already completed'); return operation; }
   if (!operation) {
     const inventory = await covenantInventory(chain, sourceTree);
+    log('inventory', { deposits: inventory.map(({ coin, state }) => ({ outpoint: `${coin.txid}:${coin.vout}`, sats: coin.value,
+      state, swept: !!coin.isSwept, expiresAt: coin.expiresAt })) });
     // Recover swept deposits separately; don't lock healthy funds in the batch.
     const due = inventory.filter(c => c.state === 'recoverable');
     const selected = due.length ? due : inventory.filter(c => c.state === 'expiring');
@@ -159,6 +172,7 @@ export async function maintainCovenant(options: {
       inputs: coins.map(({ txid, vout }) => ({ txid, vout })), amount: coins.reduce((sum, c) => sum + c.value, 0), assets: assetTotals(coins) };
     if (!Number.isSafeInteger(operation.amount) || operation.amount <= 0) throw new Error('Invalid maintenance value');
     await store.put(operation);
+    log('selected inputs', { inputs: outpoints(operation.inputs), amount: operation.amount, assets: operation.assets });
   }
   if ((operation.startedAt || operation.cancelledAt) && !operation.settlementTxid) {
     // Recover a lost batch response using ONLY the recorded inputs and their
@@ -166,9 +180,21 @@ export async function maintainCovenant(options: {
     const raw = await chain.indexer.getVtxos({ scripts: [operation.bridge ? hex(ArkAddress.decode(ownerAddress).pkScript) : source] });
     const inputs = (operation.settlementInputs ?? operation.inputs).map(input => raw.vtxos.find(c => c.txid === input.txid && c.vout === input.vout));
     const commitment = inputs[0]?.settledBy;
+    log('reconcile recorded attempt', { inputs: inputs.map((c, i) => c ? { outpoint: `${c.txid}:${c.vout}`, swept: !!c.isSwept,
+      spent: !!c.isSpent, settledBy: c.settledBy, spentBy: c.spentBy } : { outpoint: outpoints(operation!.settlementInputs ?? operation!.inputs)[i], missing: true }) });
     if (commitment && inputs.every(c => c?.settledBy === commitment)) {
       operation.assets ??= assetTotals(inputs.map(c => c!));
       operation.settlementTxid = commitment; await store.put(operation);
+      log('recorded attempt settled', { commitment });
+    } else if (!operation.bridge && inputs.every(c => c && depositState(c) === 'spent')) {
+      // A batch spends all of its inputs or none. Every recorded input is spent,
+      // but not by one shared commitment, so this attempt never settled and never
+      // can. Retire it; the spends elsewhere already moved those funds.
+      operation.supersededAt = Date.now(); operation.completed = true;
+      operation.lastError = 'Recorded maintenance inputs were spent elsewhere; this attempt was retired.';
+      await store.put(operation);
+      log('retired attempt: inputs spent elsewhere');
+      return operation;
     } else if (options.retryUnsettled && inputs.every(c => c && depositState(c) !== 'spent' && !c.isUnrolled)) {
       const original = inputs.map(c => c!);
       // A proof containing a live no-exit-leaf input is invalid. One swept
@@ -189,6 +215,7 @@ export async function maintainCovenant(options: {
         operation.cancellationInputs = cancellationInputs;
         await store.put(operation);
       }
+      log('cancel queued intent', { inputs: outpoints(cancellationCoins) });
       try { if (cancellationCoins.length) await chain.ark.deleteIntent({ proof: operation.cancellationProof!, message }); }
       catch (error) {
         // arkd reports this after validating the proof when no queued intent matches.
@@ -196,6 +223,7 @@ export async function maintainCovenant(options: {
         // replace those inputs or infer completion from this response.
         if (!(error instanceof ArkError && error.name === 'INVALID_INTENT_PROOF' && error.message.includes('no matching intents found for intent proof'))) {
           operation.lastError = error instanceof Error ? error.message : 'Intent cancellation failed';
+          log('cancel failed', { error: operation.lastError });
           await store.put(operation); throw error;
         }
       }
@@ -207,6 +235,7 @@ export async function maintainCovenant(options: {
       }
       operation.cancelledAt = Date.now(); operation.startedAt = undefined;
       await store.put(operation);
+      log('ready to retry', { inputs: outpoints(operation.inputs), amount: operation.amount });
     } else throw new Error(`A maintenance settlement has an uncertain outcome. Resume to check and cancel its queued intent before retrying the same deposits.${operation.lastError ? ` Previous error: ${operation.lastError}` : ''}`);
   }
   if (!operation.settlementTxid) {
@@ -218,6 +247,7 @@ export async function maintainCovenant(options: {
       // be rejected by arkd. arkd fee programs may waive fees by expiry (e.g.
       // near-expiry or swept inputs), so evaluate them for these exact coins.
       const fee = new Estimator(info.fees.intentFee ?? {}).evaluate(coins.map(feeInput), [], [ownerOutput], []);
+      log('fee check', { inputs: outpoints(coins), feeSats: fee.satoshis, txFeeRate: info.fees.txFeeRate });
       if (Number(info.fees.txFeeRate) !== 0 || fee.satoshis !== 0)
         throw new Error(`Covenant maintenance currently requires zero settlement fees (server would charge ${fee.satoshis} sats)`);
     };
@@ -241,12 +271,14 @@ export async function maintainCovenant(options: {
         // Live covenant scripts have no unilateral exit leaf. Move through the
         // standard owner script before asking arkd to renew in a batch.
         if (coins.some(c => c!.isSwept)) throw new Error('Mixed swept and live deposits require separate maintenance');
+        log('live deposits: bridging to owner script first', { inputs: outpoints(recorded) });
         operation.bridge = await prepareOwnerTransfer(chain, identity, inputs, ArkAddress.decode(ownerAddress).pkScript);
         operation.settlementInputs = [{ txid: operation.bridge.txid, vout: 0 }];
         await store.put(operation);
       }
     } else inputs = [];
     if (operation.bridge) {
+      log('submit bridge', { txid: operation.bridge.txid });
       await submitOwnerTransfer(chain, identity, operation.bridge);
       const ownerScript = hex(ArkAddress.decode(ownerAddress).pkScript);
       const coins = await waitFor(async () => {
@@ -259,13 +291,17 @@ export async function maintainCovenant(options: {
     }
     assertFeeFree(inputs);
     operation.startedAt = Date.now(); await store.put(operation);
+    log('settle batch', { inputs: inputs.map(c => ({ outpoint: `${c.txid}:${c.vout}`, sats: c.value, swept: !!c.isSwept,
+      expiresAt: c.virtualStatus?.batchExpiry, script: c.script })), output: ownerAddress, amount: operation.amount });
     try {
       operation.settlementTxid = await wallet.settle({ inputs, outputs: [{ address: ownerAddress, amount: BigInt(operation.amount) }] });
     } catch (error) {
       operation.lastError = error instanceof Error ? error.message : 'Settlement failed';
+      log('settle failed', { error: operation.lastError });
       await store.put(operation); throw error;
     }
     await store.put(operation);
+    log('settled', { commitment: operation.settlementTxid });
   }
   if (!operation.transfer) {
     const commitment = operation.settlementTxid;
@@ -278,10 +314,12 @@ export async function maintainCovenant(options: {
     const coin = coins[0]!;
     if (operation.assets && JSON.stringify(assetTotals([coin])) !== JSON.stringify(operation.assets))
       throw new Error('Recovered assets do not match the recorded maintenance inputs');
+    log('return funds to covenant', { from: `${coin.txid}:${coin.vout}`, sats: coin.value, to: destination });
     operation.transfer = await prepareOwnerTransfer(chain, identity, [coin], decoded.pkScript, options.packets);
     await store.put(operation);
   }
   await submitOwnerTransfer(chain, identity, operation.transfer);
   operation.completed = true; await store.put(operation);
+  log('completed', { transfer: operation.transfer.txid, amount: operation.amount });
   return operation;
 }

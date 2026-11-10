@@ -114,7 +114,7 @@ export class TakerClient {
   constructor(readonly options: TakerOptions) {
     this.strikerUrl = serviceURL(options.strikerUrl);
   }
-  async maintainWallet(store: import('@satora/striker-protocol/browser').MaintenanceStore, options: { retryUnsettled?: boolean } = {}) {
+  async maintainWallet(store: import('@satora/striker-protocol/browser').MaintenanceStore, options: { retryUnsettled?: boolean; log?: import('@satora/striker-protocol/browser').MaintenanceLog } = {}) {
     if (this.active.size) throw new Error('Wait for the current swap operation before renewing deposits');
     return this.exclusive('wallet-maintenance', async () => {
       if (!this.options.store.list) throw new Error('Wallet maintenance requires a swap store that lists pending authorizations');

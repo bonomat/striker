@@ -52,7 +52,7 @@ main(async () => {
     async get() { return existsSync(maintenanceFile) ? readJSON(maintenanceFile) as MaintenanceOperation : undefined; },
     async put(operation) {
       writeJSON(maintenanceFile, operation);
-      if (operation.completed) renameSync(maintenanceFile, path.join(local.directory, `maintenance-${operation.transfer!.txid}.json`));
+      if (operation.completed) renameSync(maintenanceFile, path.join(local.directory, `maintenance-${operation.transfer?.txid ?? `superseded-${operation.supersededAt}`}.json`));
     },
   };
   const list = () => {

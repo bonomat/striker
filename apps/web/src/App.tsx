@@ -312,6 +312,8 @@ export default function App() {
       ]);
       setBalance(current); setLegacyBalance(previous);
       setLifecycle(lifecycle); setMaintenancePending(!!maintenance);
+      maintenanceLogChanged('status', { recoverable: lifecycle.recoverable, expiring: lifecycle.expiring, awaitingSweep: lifecycle.awaitingSweep,
+        deposits: lifecycle.deposits, pending: maintenance ? { inputs: maintenance.inputs.length, startedAt: maintenance.startedAt, lastError: maintenance.lastError } : null });
       if (maintenance?.lastError) setMaintenanceError(current => current || maintenance.lastError!);
       setBalanceError("");
     } catch {
@@ -322,13 +324,15 @@ export default function App() {
     }
   }, [account]);
   const maintainDeposits = useCallback(async (resume = false) => {
+    maintenanceLog('trigger', { resume, skipped: !account ? 'no wallet' : maintenanceRunning.current ? 'already running' : undefined });
     if (!account || maintenanceRunning.current) return;
     maintenanceRunning.current = true; lastMaintenanceAttempt.current = Date.now();
     setWalletAction(true); setMaintenanceBusy(true); setMaintenanceError(''); setQuote(null);
     try {
-      await withWalletLock(account, () => account.client.maintainWallet(account.maintenanceStore, { retryUnsettled: resume }));
+      const result = await withWalletLock(account, () => account.client.maintainWallet(account.maintenanceStore, { retryUnsettled: resume, log: maintenanceLog }));
+      maintenanceLog('finished', { completed: result.completed, superseded: !!result.supersededAt, transfer: result.transfer?.txid });
       setMaintenancePending(false);
-    } catch (error) { setMaintenanceError(errorMessage(error)); }
+    } catch (error) { maintenanceLog('failed', { error: errorMessage(error) }); console.error('[striker maintenance]', error); setMaintenanceError(errorMessage(error)); }
     finally {
       // Balance providers can be slow. Never leave the controls stuck busy after
       // the operation itself has already failed or completed.
@@ -1748,4 +1752,14 @@ export default function App() {
       )}
     </div>
   );
+}
+
+/** Wallet maintenance trace in the browser console; filter by "[striker maintenance]". */
+function maintenanceLog(event: string, details?: Record<string, unknown>) {
+  console.info(`[striker maintenance] ${new Date().toISOString()} ${event}`, details ?? '');
+}
+let lastMaintenanceStatus = '';
+function maintenanceLogChanged(event: string, details: Record<string, unknown>) {
+  const key = JSON.stringify(details);
+  if (key !== lastMaintenanceStatus) { lastMaintenanceStatus = key; maintenanceLog(event, details); }
 }

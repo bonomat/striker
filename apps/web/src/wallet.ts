@@ -94,7 +94,7 @@ export async function connectWallet(
     async get() { const raw = localStorage.getItem(maintenanceKey); return raw ? JSON.parse(raw) as MaintenanceOperation : undefined; },
     async put(operation) {
       if (operation.completed) {
-        localStorage.setItem(`${maintenanceKey}:receipt:${operation.transfer!.txid}`, JSON.stringify(operation));
+        localStorage.setItem(`${maintenanceKey}:receipt:${operation.transfer?.txid ?? `superseded-${operation.supersededAt}`}`, JSON.stringify(operation));
         localStorage.removeItem(maintenanceKey);
       } else localStorage.setItem(maintenanceKey, JSON.stringify(operation));
     },

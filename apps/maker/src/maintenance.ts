@@ -35,6 +35,11 @@ export async function maintainMakerPool(file: string, chain: Chain, wallet: IWal
   const operation = await maintainCovenant({ chain, wallet, identity, sourceTree: source.tree,
     destination: target.tree.address('tark', chain.server).encode(), packets: [epochPacket(0n)],
     store: { async get() { return saved.operation; }, async put(operation) { saved.operation = operation; writeJSON(journalFile, saved); } } });
+  if (!operation.transfer) {
+    // The recorded pool inputs were spent elsewhere; keep the current deposit state.
+    renameSync(journalFile, `${file}.maintenance-superseded-${operation.supersededAt}.json`);
+    return false;
+  }
   writeJSON(file, { ...saved.nextState, originalCoin: { txid: operation.transfer!.txid, vout: 0, value: operation.amount } });
   renameSync(journalFile, `${file}.maintenance-${operation.transfer!.txid}.json`);
   return true;

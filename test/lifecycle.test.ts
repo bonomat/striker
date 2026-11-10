@@ -164,6 +164,34 @@ test('lost settlement responses reconcile only the recorded inputs settlement ID
   assert.equal(saved.settlementTxid, commitment);
 });
 
+test('failed attempts whose inputs were spent elsewhere are retired instead of blocking maintenance', async () => {
+  const chain = chainBase(), tree = reusableTakerContract(chain, publicKey(2)).tree;
+  const address = tree.address('tark', chain.server).encode();
+  // A live deposit was rejected alongside swept ones; later the swept ones were
+  // recovered in another batch and the live one was spent offchain.
+  let saved: MaintenanceOperation | undefined = { version: 1, network: 'regtest', source: hex(tree.pkScript), destination: address,
+    ownerAddress: address, inputs: [{ txid: 'aa'.repeat(32), vout: 0 }, { txid: 'bb'.repeat(32), vout: 0 }], amount: 2000,
+    startedAt: now, lastError: 'INVALID_VTXO_SCRIPT (10): failed to get smallest exit delay: no exit leaf' };
+  chain.indexer = { async getVtxos() { return { vtxos: [
+    coin({ txid: 'aa'.repeat(32), isSpent: true, isSwept: true, spentBy: 'cc'.repeat(32) }),
+    coin({ txid: 'bb'.repeat(32), isSpent: true, isSwept: true, settledBy: 'dd'.repeat(32) }),
+  ] }; } } as unknown as Chain['indexer'];
+  const wallet = { async getAddress() { return address; },
+    async settle() { assert.fail('must never submit another batch'); } } as unknown as IWallet;
+  const options = { chain, wallet, identity: {} as Identity, sourceTree: tree, destination: address,
+    store: { async get() { return saved; }, async put(op: MaintenanceOperation) { saved = structuredClone(op); } } };
+  const result = await maintainCovenant(options);
+  assert.equal(result.completed, true); assert.ok(result.supersededAt); assert.equal(result.transfer, undefined);
+  // A partially spent attempt is still ambiguous and must not be retired.
+  saved = { ...saved!, completed: undefined, supersededAt: undefined };
+  chain.indexer = { async getVtxos() { return { vtxos: [
+    coin({ txid: 'aa'.repeat(32), isSpent: true, isSwept: true, spentBy: 'cc'.repeat(32) }),
+    coin({ txid: 'bb'.repeat(32), isSwept: true }),
+  ] }; } } as unknown as Chain['indexer'];
+  await assert.rejects(maintainCovenant(options), /uncertain outcome/);
+  assert.equal(saved!.completed, undefined);
+});
+
 test('previous-wallet balances exclude covenant contracts imported for recovery', async () => {
   const chain = chainBase(), tree = reusableTakerContract(chain, publicKey(2)).tree;
   const wallet = new CovenantWallet(chain, publicKey(2), {} as Identity, {
