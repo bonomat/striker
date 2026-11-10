@@ -1565,17 +1565,7 @@ export default function App() {
                     />
                   </span>
                   <span>
-                    <strong>
-                      {formatAmount(
-                        BigInt(swap.request.giveAmount),
-                        swap.request.direction === "btc-to-token"
-                          ? 8
-                          : asset.decimals,
-                      )}{" "}
-                      {swap.request.direction === "btc-to-token"
-                        ? `BTC → ${asset.symbol}`
-                        : `${asset.symbol} → BTC`}
-                    </strong>
+                    <strong>{swapAmounts(swap, asset)}</strong>
                     <small>
                       {swap.createdAt
                         ? new Date(swap.createdAt).toLocaleString()
@@ -1852,4 +1842,15 @@ function maintenanceLogChanged(event: string, details: Record<string, unknown>) 
 /** Order trace in the browser console; filter by "[striker order]". Each step has its own and total ms. */
 function orderLog(event: string, details?: Record<string, unknown>) {
   console.info(`[striker order] ${new Date().toISOString()} ${event}`, details ?? "");
+}
+
+/** "1 USD → 0.00001343 BTC": the received side is the fill once known, else the signed minimum. */
+function swapAmounts(swap: SavedSwap, asset: AppConfig["asset"]) {
+  const selling = swap.request.direction === "btc-to-token";
+  const give = `${formatAmount(BigInt(swap.request.giveAmount), selling ? 8 : asset.decimals)} ${selling ? "BTC" : asset.symbol}`;
+  const received = swap.response.offer?.quote.x ?? swap.order?.minReceive;
+  const receiveSymbol = selling ? asset.symbol : "BTC";
+  if (received === undefined) return `${give} → ${receiveSymbol}`;
+  const amount = formatAmount(BigInt(received), selling ? asset.decimals : 8);
+  return `${give} → ${swap.response.offer ? "" : "≥ "}${amount} ${receiveSymbol}`;
 }
