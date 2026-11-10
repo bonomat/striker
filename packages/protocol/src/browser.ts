@@ -8,3 +8,4 @@ export * from './intent.js';
 export * from './intent-settlement.js';
 export * from './settlement.js';
 export * from './lifecycle.js';
+export * from './orders.js';

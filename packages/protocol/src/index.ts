@@ -11,3 +11,4 @@ export * from './encoding.js';
 export * from './intent.js';
 export * from './intent-settlement.js';
 export * from './lifecycle.js';
+export * from './orders.js';

@@ -1,27 +1,33 @@
 import { asset, buildOffchainTx, EmulatorPacket, Extension, type VtxoScript } from '@arkade-os/sdk';
 import { RawWitness } from '@scure/btc-signer';
 import { asInput, epochPacket, type Coin } from './settlement.js';
-import { encodeIntent, intentDomain, makerWitness, intentRecords, MAX_INTENT_INPUTS, termsForInput, verifyIntent, type SignedTakerInput } from './intent.js';
+import { encodeIntent, intentDomain, makerWitness, intentRecords, MAX_INTENT_INPUTS, termsForInput, termsForOrder, verifyIntent, type IntentVersion, type SignedTakerInput } from './intent.js';
 import { equalBytes } from './quote.js';
 import { hex, type SignedOffer } from './wire.js';
 import type { Chain } from './chain-client.js';
 
 export function buildIntentSettlement(chain: Chain, offer: SignedOffer, maker: { coin: Coin; tree: VtxoScript; script: Uint8Array },
-  taker: { owner: Uint8Array; tree: VtxoScript; script: Uint8Array; coins: Coin[]; inputs: SignedTakerInput[] }) {
+  taker: { owner: Uint8Array; tree: VtxoScript; script: Uint8Array; coins: Coin[]; inputs: SignedTakerInput[]; version?: IntentVersion }) {
+  const version = taker.version ?? 1;
   const { coins, inputs } = taker, btcToToken = offer.deposit.direction === 'btc-to-token';
   if (!coins.length || coins.length > MAX_INTENT_INPUTS || coins.length !== inputs.length) throw new Error('Invalid taker input count');
   if (new Set(coins.map(c => `${c.txid}:${c.vout}`)).size !== coins.length) throw new Error('Duplicate taker input');
   if (inputs.some(i => i.signature !== inputs[0]!.signature)) throw new Error('Every taker input must share one batch signature');
   const batch = coins.map((coin, i) => ({ coin, paySats: BigInt(inputs[i]!.terms.paySats), payTokens: BigInt(inputs[i]!.terms.payTokens) }));
-  const target = hex(offer.deposit.wantAsset), domain = intentDomain(chain);
+  const target = hex(offer.deposit.wantAsset), domain = intentDomain(chain, version);
   let paidSats = 0n, paidTokens = 0n;
   const changes = coins.map((coin, i) => {
     const input = inputs[i]!;
     if (input.coin.txid !== coin.txid || input.coin.vout !== coin.vout) throw new Error('Intent outpoint mismatch');
     const sats = BigInt(input.terms.paySats), tokens = BigInt(input.terms.payTokens);
-    const expected = termsForInput(chain.checkpoint, taker.tree, offer, coin, sats, tokens, batch);
-    if (!equalBytes(encodeIntent(domain, expected), encodeIntent(domain, input.terms)) || !verifyIntent(taker.owner, domain, input))
+    // v2 orders take market and direction from the matched offer, so a mismatch
+    // fails equality; the order's own minimum and deadline must still hold.
+    const expected = version === 1 ? termsForInput(chain.checkpoint, taker.tree, offer, coin, sats, tokens, batch)
+      : termsForOrder(chain.checkpoint, taker.tree, { assetId: offer.deposit.wantAsset, direction: offer.deposit.direction ?? 'token-to-btc',
+        receive: BigInt(input.terms.receive), deadline: BigInt(input.terms.deadline) }, coin, sats, tokens, batch);
+    if (!equalBytes(encodeIntent(domain, expected, version), encodeIntent(domain, input.terms, version)) || !verifyIntent(taker.owner, domain, input, version))
       throw new Error('Invalid taker authorization');
+    if (offer.quote.x < BigInt(input.terms.receive)) throw new Error('Best maker quote is below the order minimum');
     const value = BigInt(coin.value) - sats;
     if (value < 330n || tokens < 0n || sats < 0n) throw new Error('Taker change must retain at least 330 sats');
     const held = BigInt(coin.assets?.find(a => a.assetId === target)?.amount ?? 0);
@@ -58,7 +64,7 @@ export function buildIntentSettlement(chain: Chain, offer: SignedOffer, maker: {
   const emulator = EmulatorPacket.create([
     { vin: 0, script: maker.script, witness: makerWitness(offer) },
     ...inputs.map((input, i) => ({ vin: i + 1, script: taker.script,
-      witness: RawWitness.encode([Uint8Array.from(input.signature.match(/../g)!, b => parseInt(b, 16)), encodeIntent(domain, input.terms), intentRecords(input.terms)]) })),
+      witness: RawWitness.encode([Uint8Array.from(input.signature.match(/../g)!, b => parseInt(b, 16)), encodeIntent(domain, input.terms, version), intentRecords(input.terms)]) })),
   ]);
   return buildOffchainTx([asInput(maker.coin, maker.tree), ...coins.map(c => asInput(c, taker.tree))], [
     { script: taker.tree.pkScript, amount: btcToToken ? 330n : offer.quote.x },

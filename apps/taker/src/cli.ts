@@ -4,11 +4,14 @@ import path from 'node:path';
 import { CovenantWallet, TakerClient, type SavedSwap, type SwapStore, type MaintenanceOperation, type MaintenanceStore } from '@satora/taker-sdk';
 import { sha256 } from "@noble/hashes/sha2.js";
 import { schnorr } from '@noble/curves/secp256k1.js';
-import { args, assetId, bytes, connectChain, createWallet, decimal, fundedCoin, hex, main, object,
+import { args, assetId, estimateReceive, minimumReceive, bytes, connectChain, createWallet, decimal, fundedCoin, hex, main, object,
   parseOffer, parseQuoteRequest, readJSON, requestJSON, required, secretKey, takerContract,
   validateOfferFor, waitFor, writeJSON, loadConfig, parseDirection } from '@satora/striker-protocol';
 
-const HELP = `taker init | address | balance | move-legacy
+const HELP = `taker init | address | balance | move-legacy | move-covenant
+taker rates  (best live maker rates from Striker)
+taker order --give-amount UNITS [--direction token-to-btc|btc-to-token] [--slippage-bps 50] [--asset-id HEX]
+  (sign a slippage order from the v2 order wallet; Striker fills it with the best maker)
 taker maintain  (recover expired deposits or renew deposits through a fresh batch)
 taker withdraw --to ARKADE_ADDRESS
 taker issue --amount UNITS [--decimals 8]  (amount is atomic units)
@@ -20,10 +23,11 @@ The private key is generated once in DIR/private-key. TAKER_PRIVATE_KEY imports 
 Execute/status use the most recent saved quote by default. All swaps go through Striker.`;
 
 main(async () => {
-  const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'decimals', 'out', 'quote', 'quote-id', 'to']);
+  const parsed = args(['striker', 'asset-id', 'give-amount', 'direction', 'amount', 'decimals', 'out', 'quote', 'quote-id', 'to', 'slippage-bps']);
   const command = parsed.positionals[0], flags = parsed.values;
   if (flags.help || !command) { console.log(HELP); return; }
-  if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status', 'move-legacy', 'withdraw', 'maintain'].includes(command)) throw new Error(HELP);
+  if (!['init', 'address', 'balance', 'issue', 'quote', 'execute', 'refund', 'status', 'move-legacy', 'withdraw', 'maintain',
+    'rates', 'order', 'move-covenant'].includes(command)) throw new Error(HELP);
   const local = loadConfig('taker', typeof flags['config-dir'] === 'string' ? flags['config-dir'] : undefined);
   function quoteFile(): string {
     if (typeof flags.quote === 'string') return flags.quote;
@@ -43,10 +47,17 @@ main(async () => {
     console.log(JSON.stringify(await requestJSON(`${url}/v1/swaps/${encodeURIComponent(quoteId)}`)));
     return;
   }
-  const chain = await connectChain({ checkEmulator: !['address', 'balance', 'move-legacy', 'withdraw', 'maintain'].includes(command) });
+  if (command === 'rates') {
+    const url = new URL(required(flags.striker ?? local.config.striker, 'striker')).origin;
+    console.log(JSON.stringify(await requestJSON(`${url}/v1/rates`), null, 2));
+    return;
+  }
+  const chain = await connectChain({ checkEmulator: !['address', 'balance', 'move-legacy', 'move-covenant', 'withdraw', 'maintain'].includes(command) });
   const key = secretKey('taker', local.keyDirectory);
   const actor = await createWallet(chain, key);
   const covenant = new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet);
+  // Slippage orders need the v2 covenant; quote swaps keep using v1.
+  const orderWallet = new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet, 2);
   const maintenanceFile = path.join(local.directory, 'pending-maintenance.json');
   const maintenanceStore: MaintenanceStore = {
     async get() { return existsSync(maintenanceFile) ? readJSON(maintenanceFile) as MaintenanceOperation : undefined; },
@@ -60,14 +71,23 @@ main(async () => {
     return existsSync(directory) ? readdirSync(directory).filter(f => f.endsWith('.json')).map(f => readJSON(path.join(directory, f)) as SavedSwap) : [];
   };
   try {
-    if (command === 'address') { console.log(JSON.stringify({ address: covenant.contract.address, legacyAddress: actor.address })); return; }
+    if (command === 'address') { console.log(JSON.stringify({ address: covenant.contract.address, orderAddress: orderWallet.contract.address, legacyAddress: actor.address })); return; }
     if (command === 'balance') {
       console.log(JSON.stringify({ role: 'taker', network: chain.settings.network, address: covenant.contract.address,
-        wallet: await covenant.getBalance(), lifecycle: await covenant.getLifecycle(), maintenance: await maintenanceStore.get(), legacyWallet: await covenant.getLegacyBalance() }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
+        wallet: await covenant.getBalance(), lifecycle: await covenant.getLifecycle(), maintenance: await maintenanceStore.get(), legacyWallet: await covenant.getLegacyBalance(),
+        orderWallet: { address: orderWallet.contract.address, balance: await orderWallet.getBalance(), lifecycle: await orderWallet.getLifecycle() } }, (_, value) => typeof value === 'bigint' ? value.toString() : value, 2));
       return;
     }
     if (command === 'move-legacy') {
       console.log(JSON.stringify({ txid: await covenant.moveLegacy(), address: covenant.contract.address })); return;
+    }
+    if (command === 'move-covenant') {
+      const file = path.join(local.directory, 'pending-covenant-move.json');
+      const saved = existsSync(file) ? object(readJSON(file)) : await covenant.prepareMove(orderWallet);
+      writeJSON(file, saved);
+      const txid = await covenant.submitWithdrawal(saved as unknown as Awaited<ReturnType<typeof covenant.prepareMove>>);
+      const { unlinkSync } = await import('node:fs'); unlinkSync(file);
+      console.log(JSON.stringify({ txid, address: orderWallet.contract.address })); return;
     }
     if (command === 'withdraw') {
       const file = path.join(local.directory, 'pending-withdrawal.json');
@@ -92,6 +112,22 @@ main(async () => {
       const client = new TakerClient({ chain, actor, maintenanceStore, strikerUrl: required(local.config.striker, 'striker'),
         store: { async get() { return undefined; }, async put() { throw new Error('Maintenance cannot create swap records'); }, list } });
       console.log(JSON.stringify(await client.maintainWallet(maintenanceStore, { retryUnsettled: true }))); return;
+    }
+    if (command === 'order') {
+      const client = new TakerClient({ chain, maintenanceStore, covenantVersion: 2, actor: { ...actor, payoutScript: orderWallet.contract.tree.pkScript,
+        signIntent: async message => schnorr.sign(sha256(message), key) }, strikerUrl: required(flags.striker ?? local.config.striker, 'striker'), store: {
+          list, async get(id) { const f = path.join(local.directory, 'quotes', `${id}.json`); return existsSync(f) ? readJSON(f) as unknown as SavedSwap : undefined; },
+          async put(swap) { mkdirSync(path.join(local.directory, 'quotes'), { recursive: true, mode: 0o700 }); writeJSON(path.join(local.directory, 'quotes', `${swap.response.quoteId}.json`), swap); } } });
+      const id = assetId(flags['asset-id'] ?? local.config.assetId), direction = parseDirection(flags.direction);
+      const give = decimal(flags['give-amount'] ?? local.config.giveAmount, 'giveAmount', true);
+      const slippageBps = Number(flags['slippage-bps'] ?? 50);
+      const rate = (await client.rates()).markets.find(m => m.assetId === id && m.direction === direction);
+      if (!rate) throw new Error('No live maker rate for this market');
+      const estimate = estimateReceive(rate, give), minReceive = minimumReceive(estimate, slippageBps);
+      const swap = await client.placeOrder({ assetId: id, direction, giveAmount: give, minReceive, estimate, slippageBps });
+      console.log(JSON.stringify({ orderId: swap.response.quoteId, estimate: estimate.toString(), minReceive: minReceive.toString(),
+        received: swap.response.offer?.quote.x, result: swap.result }));
+      return;
     }
     let file = command === 'quote' ? (typeof flags.out === 'string' ? flags.out : undefined) : quoteFile();
     if (command === 'quote' && file && existsSync(file)) throw new Error('Quote file already exists');

@@ -2,6 +2,10 @@ import { createServer, type IncomingMessage } from 'node:http';
 
 import { HttpError } from './transport.js';
 export { HttpError, requestJSON } from './transport.js';
+/** Return from a route to hold the response open as a server-sent event stream. */
+export class EventStream {
+  constructor(readonly subscribe: (send: (data: unknown) => void) => () => void) {}
+}
 async function readBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let length = 0;
@@ -21,6 +25,7 @@ export async function listen(service: string, host: string, port: number,
     if (!['http:', 'https:'].includes(url.protocol) || url.origin !== origin)
       throw new Error('CORS allowlist entries must be exact HTTP(S) origins');
   }
+  const streams = new Set<import('node:http').ServerResponse>();
   const server = createServer(async (req, res) => {
     try {
       const origin = req.headers.origin;
@@ -41,6 +46,17 @@ export async function listen(service: string, host: string, port: number,
       }
       const data = await route(req.method ?? 'GET', new URL(req.url ?? '/', 'http://localhost').pathname,
         req.method === 'POST' ? await readBody(req) : undefined);
+      if (data instanceof EventStream) {
+        // No proxy buffering; comments keep idle connections alive through proxies.
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+        res.write(': connected\n\n');
+        const unsubscribe = data.subscribe(event => res.write(`data: ${JSON.stringify(event)}\n\n`));
+        const keepAlive = setInterval(() => res.write(': keep-alive\n\n'), 15_000);
+        streams.add(res);
+        res.once('close', () => { streams.delete(res); clearInterval(keepAlive); unsubscribe(); });
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(data));
     } catch (error) {
@@ -57,6 +73,8 @@ export async function listen(service: string, host: string, port: number,
   console.log(JSON.stringify({ service, url }));
   const shutdown = () => {
     server.close(); server.closeIdleConnections();
+    // Event streams never go idle; end them so in-flight requests can finish alone.
+    for (const stream of streams) stream.end();
   };
   for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, shutdown);
   server.once('close', () => {

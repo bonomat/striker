@@ -11,8 +11,9 @@ import {
 } from "@arkade-os/sdk";
 import {
   bytes,
-  coinsAt, checkEmulator, reusableTakerContract, termsForInput, encodeIntent, MAX_INTENT_INPUTS,
-  type SignedTakerInput,
+  coinsAt, checkEmulator, reusableTakerContract, termsForInput, termsForOrder, encodeIntent, MAX_INTENT_INPUTS,
+  parseMarketSnapshot, parseOrderResult, orderId, assetId as parseAssetId, nowSeconds,
+  type SignedTakerInput, type IntentVersion, type MarketSnapshot, type Coin,
   decimal,
   encodeBase64,
   decodeBase64,
@@ -41,12 +42,27 @@ export interface SwapResult {
   status: string;
   txid?: string;
 }
+/** A quote response, or an order whose filled maker quote is known only after settlement. */
+export type SavedResponse = Omit<QuoteResponse, 'offer' | 'protocol'> & {
+  offer?: QuoteResponse['offer'];
+  protocol?: 'intent-v1' | 'order-v2';
+};
+export interface SavedOrder {
+  /** Smallest output the signed order accepts (atomic units). */
+  minReceive: string;
+  /** Unix seconds after which the authorization can no longer settle. */
+  deadline: string;
+  /** Indicative output when the order was signed, for display. */
+  estimate?: string;
+  slippageBps?: number;
+}
 export interface SavedSwap {
   version: 1;
   network: string;
   striker: string;
   request: QuoteRequest;
-  response: QuoteResponse;
+  response: SavedResponse;
+  order?: SavedOrder;
   createdAt?: number;
   intentInputs?: SignedTakerInput[];
   intentSubmittedAt?: number;
@@ -69,8 +85,8 @@ export interface SwapStore {
 export function hasPendingAuthorization(swap: SavedSwap, now = Date.now()): boolean {
   if (swap.result?.status === 'settled' || swap.result?.status === 'cancelled' || swap.refund?.status === 'refunded') return false;
   if (!(swap.intentInputs || swap.fundingStartedAt || swap.funding)) return false;
-  if (swap.intentInputs && swap.response?.protocol === 'intent-v1') {
-    const deadline = Number(swap.response.offer?.quote.deadline);
+  if (swap.intentInputs && (swap.response?.protocol === 'intent-v1' || swap.response?.protocol === 'order-v2')) {
+    const deadline = Number(swap.response.protocol === 'order-v2' ? swap.order?.deadline : swap.response.offer?.quote.deadline);
     if (Number.isFinite(deadline) && deadline > 0 && deadline * 1000 + 60000 <= now) return false;
   }
   return true;
@@ -88,6 +104,29 @@ export interface TakerOptions {
   };
   strikerUrl: string;
   store: SwapStore;
+  /** Covenant the wallet holds its swap funds in. v2 enables slippage orders. */
+  covenantVersion?: IntentVersion;
+}
+/** Default lifetime of a signed slippage order. */
+export const ORDER_TTL_SECONDS = 60;
+type Contribution<C> = { coin: C; sats: bigint; tokens: bigint };
+/** Pick deposits paying `sats` and `tokens`, each keeping a 330-sat carrier. */
+export function selectContributions<C extends Coin>(coins: C[], assetId: string, sats: bigint, tokens: bigint): Contribution<C>[] {
+  const held = (c: C) => BigInt(c.assets?.find(v => v.assetId === assetId)?.amount ?? 0);
+  // Token-bearing deposits first when paying tokens; otherwise largest BTC first.
+  const ordered = [...coins].sort((a, b) => tokens > 0n && held(a) !== held(b) ? (held(a) > held(b) ? -1 : 1) : b.value - a.value);
+  const selected: Contribution<C>[] = [];
+  for (const coin of ordered) {
+    if (sats === 0n && tokens === 0n) break;
+    const spare = BigInt(coin.value) - 330n;
+    if (spare < 0n) continue;
+    const payTokens = held(coin) < tokens ? held(coin) : tokens, paySats = spare < sats ? spare : sats;
+    if (payTokens === 0n && paySats === 0n) continue;
+    selected.push({ coin, sats: paySats, tokens: payTokens }); sats -= paySats; tokens -= payTokens;
+  }
+  if (sats || tokens || selected.length > MAX_INTENT_INPUTS)
+    throw new Error("Insufficient covenant balance, or more than four deposits are needed. Each change output needs a 330-sat carrier. Move previous-wallet funds, consolidate deposits, or deposit more BTC.");
+  return selected;
 }
 export const swapId = (value: unknown) => {
   const id = string(value, "quoteId");
@@ -123,10 +162,99 @@ export class TakerClient {
         throw new Error('Resolve pending swaps or cancel their authorizations before renewing deposits');
       const { actor, chain } = this.options;
       if (!actor.identity) throw new Error('Wallet maintenance requires an owner signing identity');
-      return new CovenantWallet(chain, actor.publicKey, actor.identity!, actor.wallet).maintain(store, options);
+      return new CovenantWallet(chain, actor.publicKey, actor.identity!, actor.wallet, this.covenantVersion).maintain(store, options);
     });
   }
 
+  get covenantVersion(): IntentVersion { return this.options.covenantVersion ?? 1; }
+  covenant(version: IntentVersion = this.covenantVersion) {
+    const { actor, chain } = this.options;
+    if (!actor.identity) throw new Error('This wallet has no owner signing identity');
+    return new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet, version);
+  }
+  /** Current best indicative rates across all makers. */
+  async rates(): Promise<MarketSnapshot> {
+    return parseMarketSnapshot(await requestJSON(`${this.strikerUrl}/v1/rates`));
+  }
+  /** Stream best rates; returns a function that closes the stream. */
+  subscribeRates(onSnapshot: (snapshot: MarketSnapshot) => void, onError?: (error: Error) => void): () => void {
+    const Source = (globalThis as { EventSource?: typeof EventSource }).EventSource;
+    if (!Source) throw new Error('This runtime has no EventSource');
+    const source = new Source(`${this.strikerUrl}/v1/rates/stream`);
+    source.onmessage = event => {
+      try { onSnapshot(parseMarketSnapshot(JSON.parse(String(event.data)))); }
+      catch (error) { onError?.(error instanceof Error ? error : new Error('Invalid rate update')); }
+    };
+    // EventSource reconnects by itself; report so the UI can mark prices stale.
+    source.onerror = () => onError?.(new Error('Live prices disconnected; reconnecting'));
+    return () => source.close();
+  }
+  /**
+   * Sign and submit a slippage order: pay exactly `giveAmount`, receive at least
+   * `minReceive`, before `ttlSeconds` pass. Striker fills it with the best maker.
+   */
+  async placeOrder(params: { assetId: string; direction: Direction; giveAmount: bigint; minReceive: bigint;
+    ttlSeconds?: number; estimate?: bigint; slippageBps?: number }): Promise<SavedSwap> {
+    const { actor, chain, store } = this.options;
+    if (this.covenantVersion !== 2) throw new Error('Slippage orders need a v2 covenant wallet');
+    const sign = actor.signIntent;
+    if (!sign) throw new Error('This wallet cannot authorize orders');
+    const id = parseAssetId(params.assetId), ttl = params.ttlSeconds ?? ORDER_TTL_SECONDS;
+    if (params.giveAmount <= 0n || params.minReceive <= 0n) throw new Error('Order amounts must be positive');
+    if (!Number.isInteger(ttl) || ttl < 15 || ttl > 600) throw new Error('Order lifetime must be 15-600 seconds');
+    return this.exclusive('order', async () => {
+      if (await this.options.maintenanceStore?.get()) throw new Error('Complete or inspect pending wallet maintenance before swapping');
+      await checkEmulator(chain);
+      const contract = reusableTakerContract(chain, actor.publicKey, 2), reverse = params.direction === 'btc-to-token';
+      const selected = selectContributions(await coinsAt(chain, contract.tree), id,
+        reverse ? params.giveAmount + 330n : 330n, reverse ? 0n : params.giveAmount);
+      const batch = selected.map(item => ({ coin: item.coin, paySats: item.sats, payTokens: item.tokens }));
+      const order = { assetId: Uint8Array.from(id.match(/../g)!, b => parseInt(b, 16)), direction: params.direction,
+        receive: params.minReceive, deadline: nowSeconds() + BigInt(ttl) };
+      const terms = selected.map(({ coin, sats, tokens }) => termsForOrder(chain.checkpoint, contract.tree, order, coin, sats, tokens, batch));
+      const signature = hex(await sign(encodeIntent(contract.domain, terms[0]!, 2)));
+      const inputs = selected.map(({ coin }, i) => ({ coin: { txid: coin.txid, vout: coin.vout }, terms: terms[i]!, signature }));
+      const request = parseQuoteRequest({ assetId: id, giveAmount: params.giveAmount.toString(),
+        ...(reverse ? { direction: params.direction } : {}), takerPublicKey: hex(actor.publicKey), takerPayoutScript: hex(contract.tree.pkScript) });
+      const saved: SavedSwap = { version: 1, network: chain.settings.network, striker: this.strikerUrl, request,
+        response: { quoteId: orderId({ inputs }), fundingAddress: contract.address, protocol: 'order-v2' },
+        order: { minReceive: params.minReceive.toString(), deadline: order.deadline.toString(),
+          ...(params.estimate === undefined ? {} : { estimate: params.estimate.toString() }),
+          ...(params.slippageBps === undefined ? {} : { slippageBps: params.slippageBps }) },
+        intentInputs: inputs, createdAt: Date.now() };
+      // Persist the exact authorization first: it stays valid until its deadline.
+      await store.put(saved);
+      saved.intentSubmittedAt = Date.now(); await store.put(saved);
+      return this.submitOrder(saved);
+    });
+  }
+  private async submitOrder(saved: SavedSwap): Promise<SavedSwap> {
+    const raw = await requestJSON(`${this.strikerUrl}/v3/orders`, { takerPublicKey: saved.request.takerPublicKey,
+      assetId: saved.request.assetId, direction: saved.request.direction ?? 'token-to-btc', giveAmount: saved.request.giveAmount,
+      inputs: saved.intentInputs }, 60_000);
+    return this.recordOrder(saved, raw);
+  }
+  private async recordOrder(saved: SavedSwap, raw: unknown): Promise<SavedSwap> {
+    const result = parseOrderResult(raw);
+    if (result.orderId !== saved.response.quoteId) throw new Error('Order result belongs to another order');
+    if (result.status === 'settled') {
+      if (!result.txid || !result.fill) throw new Error('Settled order is missing its fill');
+      // Check the fill against what was signed before recording it.
+      validateOfferFor(result.fill, saved.request, false);
+      if (result.fill.quote.x < BigInt(saved.order!.minReceive)) throw new Error('Reported fill is below the signed minimum');
+      saved.response.offer = result.offer;
+      saved.result = { quoteId: result.orderId, status: 'settled', txid: result.txid };
+    } else saved.result = { quoteId: result.orderId, status: result.status, ...(result.txid ? { txid: result.txid } : {}) };
+    await this.options.store.put(saved);
+    return saved;
+  }
+  /** Re-check an order with Striker and record the outcome. */
+  async refreshOrder(id: string): Promise<SavedSwap> {
+    const saved = await this.saved(id);
+    if (saved.response.protocol !== 'order-v2') throw new Error('Not a slippage order');
+    if (saved.result?.status === 'settled') return saved;
+    return this.recordOrder(saved, await requestJSON(`${this.strikerUrl}/v3/orders/${swapId(id)}`));
+  }
   verify(request: QuoteRequest, value: unknown, checkExpiry = true) {
     const response = object(value),
       offer = parseOffer(response.offer),
@@ -148,7 +276,7 @@ export class TakerClient {
     if (response.fundingAddress !== contract.address)
       throw new Error("Striker returned an incorrect funding address");
     swapId(response.quoteId);
-    return { response: response as unknown as QuoteResponse, offer, contract };
+    return { response: response as unknown as QuoteResponse & SavedResponse, offer, contract };
   }
   async quote(assetId: string, amount: string, direction: Direction = 'token-to-btc'): Promise<SavedSwap> {
     if (this.options.actor.signIntent) await checkEmulator(this.options.chain);
@@ -318,11 +446,12 @@ export class TakerClient {
   async cancelIntent(quoteId: string): Promise<string> {
     return this.exclusive(quoteId, async () => {
       const saved = await this.saved(quoteId), { actor, chain } = this.options;
-      this.verify(saved.request, saved.response, false);
+      const order = saved.response.protocol === "order-v2";
+      if (!order) this.verify(saved.request, saved.response, false);
       if (saved.result?.status === "cancelled") return saved.cancellation!.txid;
-      if (saved.response.protocol !== "intent-v1" || !saved.intentInputs || saved.result?.status === "settled" || !actor.identity)
+      if ((saved.response.protocol !== "intent-v1" && !order) || !saved.intentInputs || saved.result?.status === "settled" || !actor.identity)
         throw new Error("No pending authorization to cancel");
-      const wallet = new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet);
+      const wallet = new CovenantWallet(chain, actor.publicKey, actor.identity, actor.wallet, order ? 2 : 1);
       if (!saved.cancellation) {
         const coins = await wallet.coins();
         if (!saved.intentInputs.every(input => coins.some(c => c.txid === input.coin.txid && c.vout === input.coin.vout)))

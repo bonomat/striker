@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { asset, Extension } from '@arkade-os/sdk';
 import { fixture, publicKey, secret } from './fixtures.js';
-import { reusableTakerContract, termsForInput, signIntent, verifyIntent, encodeIntent, INTENT_LENGTH,
-  parseTakerInput } from '../packages/protocol/src/intent.js';
+import { reusableTakerContract, termsForInput, termsForOrder, signIntent, verifyIntent, encodeIntent, INTENT_LENGTH,
+  intentLength, parseTakerInput } from '../packages/protocol/src/intent.js';
 import { buildIntentSettlement } from '../packages/protocol/src/intent-settlement.js';
 import { makerContract, type Chain } from '../packages/protocol/src/chain-client.js';
 import { signQuote } from '../packages/protocol/src/quote.js';
@@ -71,4 +71,49 @@ test('intent v1 vector fixes the wire bytes and recoverable covenant address for
   assert.equal(hex(user.script), v.covenantScript);
   assert.equal(user.address, v.address);
   assert(verifyIntent(publicKey(2), user.domain, { ...inputs[0]!, signature: v.signature }));
+});
+
+function orderSetup(receive = 100n) {
+  const f = setup(), user = reusableTakerContract(f.chain, publicKey(2), 2);
+  const order = { assetId: f.offer.deposit.wantAsset, direction: 'btc-to-token' as const, receive, deadline: f.offer.quote.deadline + 60n };
+  const batch = f.coins.map((coin, i) => ({ coin, paySats: i === 0 ? 500n : 330n, payTokens: 0n }));
+  const inputs = f.coins.map((coin, i) => {
+    const terms = termsForOrder(f.chain.checkpoint, user.tree, order, coin, batch[i]!.paySats, 0n, batch);
+    return { coin: { txid: coin.txid, vout: coin.vout }, terms, signature: signIntent(secret(2), user.domain, terms, 2) };
+  });
+  for (const input of inputs) input.signature = inputs[0]!.signature;
+  return { ...f, user, order, inputs, taker: { ...user, owner: publicKey(2), coins: f.coins, inputs, version: 2 as const } };
+}
+test('v2 slippage orders get their own domain, address and message, and authenticate every field', () => {
+  const f = orderSetup(), v1 = reusableTakerContract(f.chain, publicKey(2)), input = f.inputs[0]!;
+  assert.notEqual(f.user.address, v1.address);
+  assert.equal(encodeIntent(f.user.domain, input.terms, 2).length, intentLength(2));
+  assert.equal(intentLength(2), INTENT_LENGTH - 64);
+  assert.equal(input.terms.makerScript, undefined);
+  assert(verifyIntent(publicKey(2), f.user.domain, input, 2));
+  // Neither the v1 domain nor the v1 encoding accepts a v2 signature.
+  assert(!verifyIntent(publicKey(2), v1.domain, input, 2));
+  assert.throws(() => encodeIntent(f.user.domain, input.terms, 1), /makerScript/);
+  for (const key of Object.keys(input.terms) as (keyof typeof input.terms)[]) {
+    const value = input.terms[key]!;
+    const changed = value.length >= 64 ? (value[0] === '0' ? '1' : '0') + value.slice(1) : String(BigInt(value) + 1n);
+    assert(!verifyIntent(publicKey(2), f.user.domain, { ...input, terms: { ...input.terms, [key]: changed } }, 2), key);
+  }
+  assert.deepEqual(parseTakerInput(input, 2), input);
+  assert.throws(() => parseTakerInput({ ...input, terms: { ...input.terms, makerScript: '00'.repeat(32) } }, 2), /maker quote/);
+});
+test('v2 orders settle with any maker quote that meets the minimum, and nothing below it', () => {
+  const exact = orderSetup(100n);
+  const built = buildIntentSettlement(exact.chain, exact.offer, exact.maker, exact.taker);
+  assert.deepEqual(built.arkTx.getOutput(0).script, exact.user.tree.pkScript);
+  assert.equal(Extension.fromTx(built.arkTx).getEmulatorPacket()!.entries.length, 3);
+  assert.doesNotThrow(() => { const f = orderSetup(99n); buildIntentSettlement(f.chain, f.offer, f.maker, f.taker); });
+  const greedy = orderSetup(101n);
+  assert.throws(() => buildIntentSettlement(greedy.chain, greedy.offer, greedy.maker, greedy.taker), /below the order minimum/);
+  // Market and direction come from the offer; a mismatch breaks the signed message.
+  const f = orderSetup(), other = { ...f.offer, deposit: { ...f.offer.deposit, direction: undefined } };
+  assert.throws(() => buildIntentSettlement(f.chain, other, f.maker, f.taker), /authorization/);
+  // Contributions must still equal the matched quote exactly.
+  const bigger = { ...f.offer, quote: { ...f.offer.quote, y: 501n } };
+  assert.throws(() => buildIntentSettlement(f.chain, bigger, f.maker, f.taker), /contributions/);
 });

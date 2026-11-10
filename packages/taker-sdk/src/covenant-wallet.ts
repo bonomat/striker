@@ -1,12 +1,14 @@
 import { ArkAddress, asset, buildOffchainTx, Extension, type Identity, type IWallet, type WalletBalance } from '@arkade-os/sdk';
-import { asInput, coinsAt, covenantInventory, maintainCovenant, submitOwnerTransfer, encodeBase64, reusableTakerContract, equalBytes, type Chain, type MaintenanceStore, type MaintenanceLog } from '@satora/striker-protocol/browser';
+import { asInput, coinsAt, covenantInventory, maintainCovenant, submitOwnerTransfer, encodeBase64, reusableTakerContract, equalBytes, type Chain, type MaintenanceStore, type MaintenanceLog, type IntentVersion } from '@satora/striker-protocol/browser';
 
 /** Indexer-backed reusable wallet. The SDK wallet remains available for legacy funds. */
 export class CovenantWallet {
   readonly contract;
   constructor(readonly chain: Chain, readonly publicKey: Uint8Array, readonly identity: Pick<Identity, 'sign'>,
-    readonly legacy: Pick<IWallet, 'send'> & Partial<Pick<IWallet, 'getBalance' | 'settle' | 'getAddress' | 'getVtxos' | 'getContractManager'>>) {
-    this.contract = reusableTakerContract(chain, publicKey);
+    readonly legacy: Pick<IWallet, 'send'> & Partial<Pick<IWallet, 'getBalance' | 'settle' | 'getAddress' | 'getVtxos' | 'getContractManager'>>,
+    /** v1 binds one maker quote per authorization; v2 accepts slippage orders. */
+    readonly version: IntentVersion = 1) {
+    this.contract = reusableTakerContract(chain, publicKey, version);
   }
   async coins() { return coinsAt(this.chain, this.contract.tree); }
   async getLifecycle() {
@@ -18,11 +20,11 @@ export class CovenantWallet {
       awaitingSweep: states.filter(c => c.state === 'awaiting-sweep').length };
   }
   /** Call under the same wallet lock as swaps, with no pending authorizations. */
-  async maintain(store: MaintenanceStore, options: { retryUnsettled?: boolean; log?: MaintenanceLog } = {}) {
+  async maintain(store: MaintenanceStore, options: { retryUnsettled?: boolean; log?: MaintenanceLog; destination?: string } = {}) {
     if (!this.legacy.settle || !this.legacy.getAddress || !this.legacy.getVtxos || !this.legacy.getContractManager)
       throw new Error('This wallet does not support batch recovery and renewal');
     return maintainCovenant({ chain: this.chain, wallet: this.legacy as IWallet, identity: this.identity,
-      sourceTree: this.contract.tree, destination: this.contract.address, store, ...options });
+      sourceTree: this.contract.tree, store, ...options, destination: options.destination ?? this.contract.address });
   }
   async getBalance(): Promise<WalletBalance> {
     return this.balanceFor(await covenantInventory(this.chain, this.contract.tree), 330);
@@ -84,6 +86,13 @@ export class CovenantWallet {
     const signed = await this.identity.sign(built.arkTx);
     const checkpoints = await Promise.all(built.checkpoints.map(async cp => encodeBase64((await this.identity.sign(cp)).toPSBT())));
     return { txid: signed.id, arkTx: encodeBase64(signed.toPSBT()), checkpoints };
+  }
+  /** Move every live deposit to another covenant of the same owner, e.g. v1 to v2.
+   * Swept deposits must be recovered with maintain({ destination }) instead. */
+  async prepareMove(target: CovenantWallet) {
+    if (!equalBytes(target.publicKey, this.publicKey) || target.contract.address === this.contract.address)
+      throw new Error('Deposits can only move to another covenant of this wallet');
+    return this.prepareWithdrawal(target.contract.address);
   }
   async submitWithdrawal(prepared: { txid: string; arkTx: string; checkpoints: string[] }) {
     return submitOwnerTransfer(this.chain, this.identity, prepared);

@@ -2,7 +2,9 @@
 import { randomUUID } from 'node:crypto';
 import { args, bytes, connectChain, decimal, fundedCoin, hex, HttpError, listen, liveMaker, main,
   nowSeconds, object, offerJSON, p2tr, parseOffer, parseQuoteRequest, port, requestJSON, required, loadConfig,
-  buildIntentSettlement, settle, settleIntent, reusableTakerContract, verifyIntent, parseTakerInput, coinsAt, MAX_INTENT_INPUTS, takerContract, validateOfferFor, type QuoteRequest, type SignedOffer } from '@satora/striker-protocol';
+  buildIntentSettlement, settle, settleIntent, reusableTakerContract, verifyIntent, parseTakerInput, coinsAt, MAX_INTENT_INPUTS, takerContract,
+  validateOfferFor, EventStream, parseDirection, parseOrderRequest, orderId, assetId,
+  type MarketRequest, type MarketRate, type MarketSnapshot, type OrderRequest, type OrderStatus, type QuoteRequest, type SignedOffer } from '@satora/striker-protocol';
 
 const HELP = 'striker init | serve [--makers URL[,URL]] [--host HOST] [--port PORT] [--config-dir DIR] [--network regtest|mutinynet]\nConfig defaults to .striker/config.json (or STRIKER_CONFIG_DIR). Striker has no private key.';
 interface Order {
@@ -13,6 +15,11 @@ interface Order {
   protocol?: "intent-v1";
   authorization?: string;
 }
+/** A v2 slippage order, keyed by its signature hash. */
+interface SlippageOrder { request: OrderRequest; status: OrderStatus; txid?: string; offer?: SignedOffer; error?: string; authorization: string }
+type MakerRate = { assetId: string; direction: string; available: boolean; give?: string; receive?: string; maxReceive?: string; minGive?: string; minReceive?: string };
+const KNOWN_QUOTE_FAILURES = ['Swap amount is too small', 'Insufficient maker liquidity', 'Maker liquidity expired and needs recovery',
+  'Maker liquidity is being renewed; try again shortly'];
 
 main(async () => {
   const parsed = args(['makers', 'host', 'port']), flags = parsed.values;
@@ -27,33 +34,166 @@ main(async () => {
   });
   const chain = await connectChain();
   const orders = new Map<string, Order>();
-  await listen('striker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4100),
+  const slippageOrders = new Map<string, SlippageOrder>();
+
+  /** Ask every configured maker for a firm quote; best (largest output) first. */
+  async function collectOffers(request: MarketRequest) {
+    // Maker endpoints are operator configuration. Takers cannot supply URLs.
+    const results = await Promise.allSettled(makers.map(async url => {
+      const offer = parseOffer(await requestJSON(`${url}/v1/quotes`,
+        { assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }));
+      validateOfferFor(offer, request);
+      await liveMaker(chain, offer);
+      return offer;
+    }));
+    const offers = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    offers.sort((a, b) => a.quote.x === b.quote.x ? 0 : a.quote.x > b.quote.x ? -1 : 1);
+    if (!offers.length) {
+      // Only expose known failures agreed on by every configured maker.
+      const reasons = results.map(result => result.status === 'rejected' && result.reason instanceof HttpError
+        ? result.reason.message : undefined);
+      const reason = reasons[0];
+      if (reason && reasons.every(value => value === reason) && KNOWN_QUOTE_FAILURES.includes(reason))
+        throw new HttpError(reason.startsWith('Maker liquidity') ? 503 : 422, reason);
+      throw new HttpError(503, 'No executable maker quotes');
+    }
+    return offers;
+  }
+
+  // Live indicative rates. Makers refresh their own prices on a timer; Striker
+  // polls them and streams the best rate per market to takers over SSE.
+  const makerRates = new Map<string, { receivedAt: number; validForMs: number; rates: MakerRate[] }>();
+  let snapshot: MarketSnapshot = { updatedAt: null, markets: [] };
+  const listeners = new Set<(data: unknown) => void>();
+  const pollMs = Number(local.config.ratePollMs ?? 2000);
+  if (!Number.isSafeInteger(pollMs) || pollMs < 500 || pollMs > 60000) throw new Error('ratePollMs must be 500..60000');
+  const better = (a: MakerRate, b: MakerRate) => BigInt(a.receive!) * BigInt(b.give!) > BigInt(b.receive!) * BigInt(a.give!);
+  async function pollRates() {
+    await Promise.allSettled(makers.map(async url => {
+      const body = object(await requestJSON(`${url}/v1/rates`, undefined, Math.min(pollMs * 2, 5000)));
+      if (!Array.isArray(body.rates)) throw new Error('Invalid maker rates');
+      makerRates.set(url, { receivedAt: Date.now(), validForMs: Number(body.validForMs) || pollMs * 3, rates: body.rates as MakerRate[] });
+    }));
+    const best = new Map<string, { rate: MakerRate; makers: number }>();
+    for (const [, entry] of makerRates) {
+      if (Date.now() - entry.receivedAt > Math.max(entry.validForMs, pollMs * 3)) continue;
+      for (const rate of entry.rates) {
+        try {
+          if (!rate.available || BigInt(rate.give ?? 0) <= 0n || BigInt(rate.receive ?? 0) <= 0n) continue;
+          const key = `${assetId(rate.assetId)}:${parseDirection(rate.direction)}`, current = best.get(key);
+          best.set(key, { rate: !current || better(rate, current.rate) ? rate : current.rate, makers: (current?.makers ?? 0) + 1 });
+        } catch { /* Ignore malformed maker entries. */ }
+      }
+    }
+    const markets: MarketRate[] = [...best.values()].map(({ rate, makers: count }) => ({ assetId: rate.assetId,
+      direction: parseDirection(rate.direction), give: rate.give!, receive: rate.receive!, maxReceive: rate.maxReceive ?? '0',
+      ...(rate.minGive ? { minGive: rate.minGive } : {}), ...(rate.minReceive ? { minReceive: rate.minReceive } : {}), makers: count }));
+    const changed = JSON.stringify(markets) !== JSON.stringify(snapshot.markets);
+    snapshot = { updatedAt: Date.now(), markets };
+    // Stream changes immediately, and heartbeat the timestamp so clients see freshness.
+    if (changed || listeners.size) for (const send of listeners) send(snapshot);
+  }
+  const rateTimer = setInterval(() => void pollRates(), pollMs);
+  void pollRates();
+
+  async function executeSlippageOrder(id: string, order: SlippageOrder) {
+    const { request } = order, owner = bytes(request.takerPublicKey, 32, 'takerPublicKey');
+    const user = reusableTakerContract(chain, owner, 2), terms = request.inputs[0]!.terms;
+    const minimum = BigInt(terms.receive);
+    const offers = (await collectOffers({ assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }))
+      .filter(offer => offer.quote.x >= minimum);
+    if (!offers.length) throw new HttpError(422, 'No maker can fill this order at or above your minimum right now');
+    const available = await coinsAt(chain, user.tree);
+    const coins = request.inputs.map(input => {
+      const coin = available.find(c => c.txid === input.coin.txid && c.vout === input.coin.vout);
+      if (!coin) throw new Error('Authorized taker input is no longer spendable; check wallet activity');
+      return coin;
+    });
+    const taker = { ...user, owner, coins, inputs: request.inputs, version: 2 as const };
+    // Choose the best offer that still builds. Nothing is submitted yet, so
+    // falling through to the next maker here cannot double-spend anything.
+    for (const offer of offers) {
+      let maker;
+      try {
+        maker = await liveMaker(chain, offer);
+        order.txid = buildIntentSettlement(chain, offer, maker, taker).arkTx.id;
+      } catch { continue; }
+      order.offer = offer;
+      // One submission only: a transport failure may still have settled.
+      const result = await settleIntent(chain, offer, maker, taker);
+      order.txid = result.txid; order.status = 'settled';
+      return;
+    }
+    throw new HttpError(503, 'Maker liquidity moved while matching; submit the same order again');
+  }
+  const orderJSON = (id: string, order: SlippageOrder) => ({ orderId: id, status: order.status,
+    ...(order.txid ? { txid: order.txid } : {}), ...(order.offer ? { offer: offerJSON(order.offer) } : {}),
+    ...(order.error ? { error: order.error } : {}) });
+
+  const server = await listen('striker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4100),
     async (method, path, body) => {
-      if (method === 'GET' && path === '/health') return { service: 'striker', ok: true, protocols: ['funding-v1', 'intent-v1'] };
+      if (method === 'GET' && path === '/health') return { service: 'striker', ok: true, protocols: ['funding-v1', 'intent-v1', 'order-v2'] };
+      if (method === 'GET' && path === '/v1/rates') return snapshot;
+      if (method === 'GET' && path === '/v1/rates/stream') return new EventStream(send => {
+        if (listeners.size >= 500) throw new HttpError(503, 'Too many rate subscribers');
+        listeners.add(send); send(snapshot);
+        return () => listeners.delete(send);
+      });
+      if (method === 'POST' && path === '/v3/orders') {
+        const request = parseOrderRequest(body), id = orderId(request), authorization = JSON.stringify(request);
+        const existing = slippageOrders.get(id);
+        if (existing) {
+          if (existing.authorization !== authorization) throw new HttpError(409, 'Order already exists with different terms');
+          if (existing.status !== 'failed' || !existing.txid) return orderJSON(id, existing);
+        }
+        const owner = bytes(request.takerPublicKey, 32, 'takerPublicKey'), user = reusableTakerContract(chain, owner, 2);
+        const first = request.inputs[0]!.terms;
+        if (request.inputs.some(input => input.signature !== request.inputs[0]!.signature || !verifyIntent(owner, user.domain, input, 2)))
+          throw new Error('Invalid taker authorization');
+        // The signature fixes market, direction, minimum and deadline; the request must agree.
+        const id34 = bytes(request.assetId, 34, 'assetId');
+        if (first.assetTxid !== hex(id34.slice(0, 32).reverse()) ||
+            first.assetGroup !== String(new DataView(id34.buffer, id34.byteOffset + 32, 2).getUint16(0, true)) ||
+            first.direction !== (request.direction === 'btc-to-token' ? '1' : '0'))
+          throw new Error('Order market does not match its authorization');
+        const paidSats = request.inputs.reduce((sum, i) => sum + BigInt(i.terms.paySats), 0n);
+        const paidTokens = request.inputs.reduce((sum, i) => sum + BigInt(i.terms.payTokens), 0n);
+        const give = BigInt(request.giveAmount), reverse = request.direction === 'btc-to-token';
+        if (paidSats !== (reverse ? give + 330n : 330n) || paidTokens !== (reverse ? 0n : give))
+          throw new Error('Authorized contributions do not match the order amount');
+        if (BigInt(first.deadline) <= nowSeconds() + 5n) throw new HttpError(422, 'Order expired or expires too soon');
+        if (existing?.status === 'executing') throw new HttpError(409, 'Order is already executing');
+        if (existing?.txid) {
+          // A failed attempt with a candidate txid may still have settled.
+          if ((await coinsAt(chain, user.tree)).some(c => c.txid === existing.txid)) { existing.status = 'settled'; return orderJSON(id, existing); }
+          if (existing.status === 'failed') throw new HttpError(409, 'Previous attempt outcome is unknown; check order status');
+        }
+        for (const [key, value] of slippageOrders)
+          if (value.status !== 'executing' && BigInt(value.request.inputs[0]!.terms.deadline) + 3600n < nowSeconds()) slippageOrders.delete(key);
+        if (slippageOrders.size >= 5000) throw new HttpError(503, 'Order capacity reached; restart clears this PoC store');
+        const order: SlippageOrder = { request, status: 'executing', authorization };
+        slippageOrders.set(id, order);
+        try { await executeSlippageOrder(id, order); }
+        catch (error) {
+          order.status = 'failed'; order.error = error instanceof Error ? error.message : 'Execution failed';
+          // Before any submission there is nothing on chain; let the taker retry cleanly.
+          if (!order.offer) { slippageOrders.delete(id); order.txid = undefined; }
+          throw error instanceof HttpError ? error : new HttpError(409, order.error);
+        }
+        return orderJSON(id, order);
+      }
+      if (method === 'GET' && path.startsWith('/v3/orders/')) {
+        const id = path.slice('/v3/orders/'.length), order = slippageOrders.get(id);
+        if (!/^[0-9a-f]{64}$/.test(id) || !order) throw new HttpError(404, 'Unknown order');
+        if (order.status === 'failed' && order.txid) {
+          const user = reusableTakerContract(chain, bytes(order.request.takerPublicKey, 32, 'takerPublicKey'), 2);
+          if ((await coinsAt(chain, user.tree)).some(c => c.txid === order.txid)) order.status = 'settled';
+        }
+        return orderJSON(id, order);
+      }
       if (method === 'POST' && (path === '/v1/quotes' || path === '/v2/quotes')) {
         const request = parseQuoteRequest(body);
-        // Maker endpoints are operator configuration. Takers cannot supply URLs.
-        const results = await Promise.allSettled(makers.map(async url => {
-          const offer = parseOffer(await requestJSON(`${url}/v1/quotes`,
-            { assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }));
-          validateOfferFor(offer, request);
-          await liveMaker(chain, offer);
-          return offer;
-        }));
-        const offers = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
-        offers.sort((a, b) => a.quote.x === b.quote.x ? 0 : a.quote.x > b.quote.x ? -1 : 1);
-        const offer = offers[0];
-        if (!offer) {
-          // Only expose known failures agreed on by every configured maker.
-          const reasons = results.map(result => result.status === 'rejected' && result.reason instanceof HttpError
-            ? result.reason.message : undefined);
-          const reason = reasons[0];
-          if (reason && reasons.every(value => value === reason) &&
-              ['Swap amount is too small', 'Insufficient maker liquidity', 'Maker liquidity expired and needs recovery',
-                'Maker liquidity is being renewed; try again shortly'].includes(reason))
-            throw new HttpError(reason.startsWith('Maker liquidity') ? 503 : 422, reason);
-          throw new HttpError(503, 'No executable maker quotes');
-        }
+        const offer = (await collectOffers(request))[0]!;
         for (const [id, order] of orders) if (order.offer.quote.deadline <= nowSeconds() && order.status === 'quoted') orders.delete(id);
         if (orders.size >= 1000) throw new HttpError(503, 'Order capacity reached; restart clears this PoC store');
         const intent = path === '/v2/quotes';
@@ -84,7 +224,7 @@ main(async () => {
       if (order.protocol === 'intent-v1') {
         if (!Array.isArray(payload.inputs) || !payload.inputs.length || payload.inputs.length > MAX_INTENT_INPUTS)
           throw new Error('Invalid taker input count');
-        const inputs = payload.inputs.map(parseTakerInput), authorization = JSON.stringify(inputs);
+        const inputs = payload.inputs.map(input => parseTakerInput(input)), authorization = JSON.stringify(inputs);
         const signer = bytes(order.request.takerPublicKey, 32, 'takerPublicKey');
         const domain = reusableTakerContract(chain, signer).domain;
         if (!inputs.every(input => verifyIntent(signer, domain, input))) throw new Error('Invalid taker authorization');
@@ -146,4 +286,5 @@ main(async () => {
         throw new HttpError(409, error instanceof Error ? error.message : 'Execution failed');
       }
     }, (process.env.STRIKER_ALLOWED_ORIGINS ?? '').split(',').map(origin => origin.trim()).filter(Boolean));
+  server.once('close', () => clearInterval(rateTimer));
 });

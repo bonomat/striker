@@ -22,6 +22,7 @@ The private key is generated once in DIR/private-key. MAKER_PRIVATE_KEY imports 
 Rates are BTC sats per asset atomic unit, as an integer fraction.
 Set config.json pricing={source:"binance",assetId:"...",assetDecimals:8} for live BTCUSDT bid/ask pricing.
 Without pricing configuration the saved static deposit rates are used (regtest compatibility).
+Indicative rates refresh every pricing.refreshSeconds (default 5) and are served at GET /v1/rates.
 --network regtest|mutinynet (or STRIKER_NETWORK). Keys are shared; state is per network.`;
 
 function loadState(file: string, chain: Chain, key: Uint8Array) {
@@ -82,10 +83,46 @@ main(async () => {
         console.error(JSON.stringify({ service: 'maker-maintenance', error: maintenanceError }));
       } finally { maintaining = false; }
     };
+    // Indicative rates, refreshed on a timer so Striker always holds a current price.
+    // Firm quotes are still signed per request at the exact amount.
+    const refreshMs = Number(pricing.refreshSeconds ?? 5) * 1000;
+    if (!Number.isSafeInteger(refreshMs) || refreshMs < 1000 || refreshMs > 60000) throw new Error('pricing.refreshSeconds must be 1..60');
+    const RATE_UNIT = 100_000_000n;
+    type Rate = { assetId: string; direction: string; available: boolean; give?: string; receive?: string; maxReceive?: string; minGive?: string; minReceive?: string; reason?: string };
+    let rates: { updatedAt: number | null; validForMs: number; rates: Rate[] } = { updatedAt: null, validForMs: refreshMs * 2, rates: [] };
+    let refreshing = false;
+    const refreshRates = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const next: Rate[] = [];
+        for (const file of files) {
+          const state = loadState(file, chain, key), direction = parseDirection(state.deposit.direction), id = hex(state.deposit.wantAsset);
+          try {
+            if (maintaining) throw new Error('Maker liquidity is being renewed');
+            const coins = await coinsAt(chain, makerContract(chain, state).tree);
+            if (coins.length !== 1 || ['recoverable', 'awaiting-sweep'].includes(depositState(coins[0]!))) throw new Error('Maker liquidity is unavailable');
+            const coin = coins[0]!, reverse = direction === 'btc-to-token';
+            // A large reference trade keeps rounding well below a basis point.
+            const unit = reverse ? RATE_UNIT : RATE_UNIT * 10_000n;
+            const receive = livePricing ? await livePricing.output(unit, direction)
+              : reverse ? unit * state.denominator / state.numerator : unit * state.numerator / state.denominator;
+            const held = BigInt(coin.assets?.find(a => a.assetId === id)?.amount ?? 0);
+            const maxReceive = reverse ? held - 1n : BigInt(coin.value) - 330n;
+            next.push({ assetId: id, direction, available: maxReceive > 0n && receive > 0n, give: unit.toString(), receive: receive.toString(),
+              maxReceive: (maxReceive > 0n ? maxReceive : 0n).toString(), ...(reverse ? { minGive: '330' } : { minReceive: '330' }) });
+          } catch (error) {
+            next.push({ assetId: id, direction, available: false, reason: error instanceof Error ? error.message : 'Unavailable' });
+          }
+        }
+        rates = { updatedAt: Date.now(), validForMs: refreshMs * 2, rates: next };
+      } finally { refreshing = false; }
+    };
     const server = await listen('maker', required(flags.host ?? local.config.host, 'host'), port(flags.port ?? local.config.port, 4101),
       async (method, path, body) => {
         if (method === 'GET' && path === '/health') return { service: 'maker', ok: true,
           pricing: livePricing?.status() ?? { source: 'static' }, maintenance: { enabled, running: maintaining, error: maintenanceError || null, lastCheckedAt: lastMaintenance } };
+        if (method === 'GET' && path === '/v1/rates') return rates;
         if (method !== 'POST' || path !== '/v1/quotes') throw new HttpError(404, 'Not found');
         const request = parseMarketRequest(body);
         if (maintaining) throw new HttpError(503, 'Maker liquidity is being renewed; try again shortly');
@@ -118,8 +155,9 @@ main(async () => {
         return offerJSON({ deposit: state.deposit, quote, signature: signQuote(state.deposit, quote, key) });
       });
     const timer = enabled ? setInterval(() => void maintain(), intervalMs) : undefined;
-    server.once('close', () => { if (timer) clearInterval(timer); void actor?.wallet.dispose(); });
-    void maintain();
+    const rateTimer = setInterval(() => void refreshRates(), refreshMs);
+    server.once('close', () => { if (timer) clearInterval(timer); clearInterval(rateTimer); void actor?.wallet.dispose(); });
+    void maintain(); void refreshRates();
     return;
   }
   const actor = await createWallet(chain, key);
