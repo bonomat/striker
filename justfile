@@ -95,3 +95,30 @@ emulator-stop: build
 
 emulator-logs: build
     node --experimental-eventsource --import tsx scripts/local.ts emulator-logs
+
+# Deploy a `*-working` tag to production: backend checkout plus GitHub Pages.
+promote tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$1" in *-working) ;; *) echo "Only *-working tags can be promoted" >&2; exit 1;; esac
+    git rev-parse -q --verify "refs/tags/$1" >/dev/null || { echo "Unknown tag $1" >&2; exit 1; }
+    git push origin "refs/tags/$1"
+    prod=/home/bonomat/src/striker-prod
+    git -C "$prod" fetch --tags --quiet
+    git -C "$prod" checkout --quiet --detach "$1"
+    (cd "$prod" && npm ci --no-audit --no-fund --silent && npm run build --silent)
+    systemctl --user restart striker-maker.service striker.service
+    systemctl --user is-active striker-maker.service striker.service
+    echo "Production backend is on $1; GitHub Pages deploys from the tag push."
+
+# Show which version production runs and the health of both stacks.
+stacks:
+    @echo "prod: $(git -C /home/bonomat/src/striker-prod describe --tags --always)"
+    @echo "dev:  $(git describe --tags --always --dirty)"
+    @for p in 4100 4101 4200 4201; do printf '%s ' "$p"; curl -s -m 2 "127.0.0.1:$p/health" || printf 'down'; echo; done
+
+# Restart the dev stack after rebuilding (prod is unaffected).
+dev-restart: build
+    systemctl --user restart striker-dev.service
+    -systemctl --user restart striker-maker-dev.service
+

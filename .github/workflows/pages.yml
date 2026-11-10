@@ -1,8 +1,10 @@
 name: Deploy web interface to GitHub Pages
 
+# Production deploys only verified versions: push a `*-working` tag (or run
+# this workflow manually on one). Day-to-day work runs on the dev stack.
 on:
   push:
-    branches: [main]
+    tags: ['*-working']
   workflow_dispatch:
 
 permissions:
