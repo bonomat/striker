@@ -280,6 +280,21 @@ export default function App() {
     }
   }
   const insufficient = !!balance && units > availableSend;
+  // Smallest amount the maker accepts: pay at least 330 sats, or receive at least
+  // 330 sats. Selling tokens needs a rate, so use the latest quote in that
+  // direction with a 2% buffer for price moves, rounded up to the cent.
+  const minimumSend = (() => {
+    if (reverse) return 330n;
+    const priced = [quote, ...history].find(s => s?.request.direction === "token-to-btc" &&
+      s.request.assetId === asset.id && BigInt(s.response.offer.quote.x) > 0n);
+    if (!priced) return null;
+    const x = BigInt(priced.response.offer.quote.x), y = BigInt(priced.response.offer.quote.y);
+    const raw = (330n * y * 102n + x * 100n - 1n) / (x * 100n);
+    const step = 10n ** BigInt(Math.max(0, asset.decimals - 2));
+    return (raw + step - 1n) / step * step;
+  })();
+  const minimumTitle = minimumSend === null ? `Enter an amount first; the minimum depends on the ${asset.symbol} price`
+    : !!balance && minimumSend > availableSend ? "Your balance is below the minimum swap" : "Smallest swap the maker accepts";
   const needsCarrier = !!balance && balance.available < (reverse ? 660 : 330);
   const expires = quote
     ? Math.max(
@@ -603,6 +618,9 @@ export default function App() {
       setWalletError("Copy is unavailable. Select the address below.");
     }
   }
+  function minimum() {
+    if (minimumSend !== null) setAmount(formatAmount(minimumSend, sendDecimals));
+  }
   function percentage(percent: number) {
     const quantity = (availableSend * BigInt(percent)) / 100n;
     setAmount(quantity ? formatAmount(quantity, sendDecimals) : "");
@@ -812,6 +830,7 @@ export default function App() {
             setReverse(selling); setAmount(""); setQuote(null); setQuoteError("");
           }}
           amount={amount} setAmount={setAmount} percentage={percentage}
+          minimum={minimum} minimumDisabled={minimumSend === null || (!!balance && minimumSend > availableSend)} minimumTitle={minimumTitle}
           quote={quote} quoting={quoting} expires={expires} history={history}
           locked={busy || walletAction || maintenancePending || !!pending} cta={walletAction ? 'Maintaining wallet…' : cta} disabled={ctaDisabled || busy}
           error={configError || amountError || quoteError || balanceError}
@@ -875,6 +894,13 @@ export default function App() {
                   {sendSymbol}
                 </span>
                 <div className="percentages">
+                  <button
+                    disabled={!account || !balance || busy || walletAction || maintenancePending || !!pending || minimumSend === null || minimumSend > availableSend}
+                    title={minimumTitle}
+                    onClick={minimum}
+                  >
+                    Min
+                  </button>
                   {[25, 50, 75, 100].map((percent) => (
                     <button
                       key={percent}

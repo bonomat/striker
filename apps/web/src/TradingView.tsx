@@ -15,6 +15,9 @@ interface TradingViewProps {
   amount: string;
   setAmount: (amount: string) => void;
   percentage: (percent: number) => void;
+  minimum: () => void;
+  minimumDisabled: boolean;
+  minimumTitle: string;
   quote: SavedSwap | null;
   quoting: boolean;
   expires: number;
@@ -77,7 +80,7 @@ export function TradingView(p: TradingViewProps) {
       </section>
     </div><div className="pro-ticket-column">
       <section className="pro-panel pro-ticket"><div className="pro-panel-heading"><h2>Trade</h2><span className="pro-tag">Instant quote</span></div><div className="pro-side" role="group" aria-label="Trade direction"><button aria-pressed={!reverse} className={!reverse ? "is-buy" : ""} onClick={() => p.setDirection(false)} disabled={p.locked}>Buy BTC</button><button aria-pressed={reverse} className={reverse ? "is-sell" : ""} onClick={() => p.setDirection(true)} disabled={p.locked}>Sell BTC</button></div>
-        <div className="pro-field-label"><label htmlFor="pro-amount">You pay</label><span id="pro-available">{ready ? formatAmount(balance, reverse ? 8 : asset.decimals) : "—"} {sendSymbol} available</span></div><div className="pro-amount"><input id="pro-amount" inputMode="decimal" autoComplete="off" placeholder="0" value={p.amount} onChange={e => p.setAmount(e.target.value)} disabled={p.locked} aria-describedby="pro-available pro-error" aria-invalid={!!p.error} /><span>{sendSymbol}</span></div><div className="pro-percentages">{[25, 50, 75, 100].map(n => <button key={n} onClick={() => p.percentage(n)} disabled={!ready || p.locked}>{n === 100 ? "Max" : `${n}%`}</button>)}</div>
+        <div className="pro-field-label"><label htmlFor="pro-amount">You pay</label><span id="pro-available">{ready ? formatAmount(balance, reverse ? 8 : asset.decimals) : "—"} {sendSymbol} available</span></div><div className="pro-amount"><input id="pro-amount" inputMode="decimal" autoComplete="off" placeholder="0" value={p.amount} onChange={e => p.setAmount(e.target.value)} disabled={p.locked} aria-describedby="pro-available pro-error" aria-invalid={!!p.error} /><span>{sendSymbol}</span></div><div className="pro-percentages"><button onClick={p.minimum} disabled={!ready || p.locked || p.minimumDisabled} title={p.minimumTitle}>Min</button>{[25, 50, 75, 100].map(n => <button key={n} onClick={() => p.percentage(n)} disabled={!ready || p.locked}>{n === 100 ? "Max" : `${n}%`}</button>)}</div>
         <div className="pro-field-label"><span>You receive exactly</span><span className={live ? "pro-green" : ""} role="status">{quoteStatus}</span></div><output className="pro-receive" aria-live="polite">{p.quoting ? "…" : receive}</output><span className="pro-caption">{receiveSymbol} · Into your wallet</span>
         <dl className="pro-terms"><div><dt>Execution price</dt><dd>{price ? `${price} ${asset.symbol}` : "—"}</dd></div><div><dt>Service / network fee</dt><dd>0 sats</dd></div><div><dt>Token carrier</dt><dd>330 sats</dd></div></dl><p className="pro-caption">{reverse ? "The carrier stays with the tokens you receive." : "The carrier travels with your token payment."} Quotes can become unavailable if maker funds are spent.</p>
         <div id="pro-error">{p.error && <p className="pro-error" role="alert">{p.error}</p>}</div>

@@ -1558,6 +1558,7 @@ button svg {
   }
   .card-bottom {
     margin-top: 18px;
+    flex-wrap: wrap;
   }
   .balance-text {
     font-size: 9px;
