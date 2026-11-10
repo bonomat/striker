@@ -58,6 +58,13 @@ export async function coinsAt(chain: Chain, tree: VtxoScript) {
   const now = await expiryContext(chain, result.vtxos);
   return result.vtxos.filter(c => canSpendOffchain(c, now));
 }
+/** Exact outpoints that are live and locked by `tree`. Much faster than a script
+ * lookup for scripts with long histories; anything missing or foreign is dropped. */
+export async function coinsAtOutpoints(chain: Chain, tree: Pick<VtxoScript, 'pkScript'>, outpoints: { txid: string; vout: number }[]) {
+  const result = await chain.indexer.getVtxos({ outpoints });
+  const script = hex(tree.pkScript), now = await expiryContext(chain, result.vtxos);
+  return result.vtxos.filter(c => c.script === script && canSpendOffchain(c, now));
+}
 export async function expiryContext(chain: Chain, coins: VirtualCoin[]) {
   const height = coins.some(c => c.expiresAtHeight !== undefined)
     ? (await new EsploraProvider(chain.settings.esploraUrl).getChainTip()).height : undefined;

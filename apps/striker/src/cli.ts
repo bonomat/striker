@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { args, bytes, connectChain, decimal, fundedCoin, hex, HttpError, listen, liveMaker, main,
   nowSeconds, object, offerJSON, p2tr, parseOffer, parseQuoteRequest, port, requestJSON, required, loadConfig,
   buildIntentSettlement, settle, settleIntent, reusableTakerContract, verifyIntent, parseTakerInput, coinsAt, MAX_INTENT_INPUTS, takerContract,
-  validateOfferFor, EventStream, cachingChain, parseDirection, parseOrderRequest, orderId, assetId,
+  validateOfferFor, EventStream, cachingChain, coinsAtOutpoints, parseDirection, parseOrderRequest, orderId, assetId,
   type MarketRequest, type MarketRate, type MarketSnapshot, type OrderRequest, type OrderStatus, type QuoteRequest, type SignedOffer } from '@satora/striker-protocol';
 
 const HELP = 'striker init | serve [--makers URL[,URL]] [--host HOST] [--port PORT] [--config-dir DIR] [--network regtest|mutinynet]\nConfig defaults to .striker/config.json (or STRIKER_CONFIG_DIR). Striker has no private key.';
@@ -106,15 +106,15 @@ main(async () => {
     const minimum = BigInt(terms.receive), view = cachingChain(chain);
     // Indexer round trips dominate latency: load the taker's deposits (and the
     // transactions settlement must attach) while makers are quoting.
-    const takerCoins = coinsAt(view, user.tree).then(async available => {
-      const coins = request.inputs.map(input => {
+    // The order names its exact inputs, so look those up directly, in parallel
+    // with the previous transactions settlement must attach.
+    const takerCoins = Promise.all([coinsAtOutpoints(view, user.tree, request.inputs.map(input => input.coin)),
+      view.indexer.getVirtualTxs([...new Set(request.inputs.map(input => input.coin.txid))])]).then(([available]) =>
+      request.inputs.map(input => {
         const coin = available.find(c => c.txid === input.coin.txid && c.vout === input.coin.vout);
         if (!coin) throw new Error('Authorized taker input is no longer spendable; check wallet activity');
         return coin;
-      });
-      await view.indexer.getVirtualTxs(coins.map(c => c.txid));
-      return coins;
-    });
+      }));
     takerCoins.catch(() => {});
     const quoted = await collectOffers({ assetId: request.assetId, giveAmount: request.giveAmount, direction: request.direction }, view);
     const offers = quoted.filter(({ offer }) => offer.quote.x >= minimum);
